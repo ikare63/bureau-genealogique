@@ -435,8 +435,8 @@ header.suite-header > .suite-tabs button.active{
     </div>
   </div>
   <div class="sister-nav" aria-label="Applications du Bureau généalogique">
-    <a class="sister-link" href="https://arboris-lbg.neocities.org/">Arboris</a>
-    <a class="sister-link" href="https://arboris-lbg.neocities.org/index2">Scriptoria</a>
+    <a class="sister-link" href="index.html">Arboris</a>
+    <a class="sister-link" href="index2.html">Scriptoria</a>
     <a class="sister-link active" href="#" aria-current="page">Pistoria</a>
   </div>
   <nav class="suite-tabs" id="nav" aria-label="Navigation Pistoria"></nav>
@@ -1129,7 +1129,7 @@ function arborisSummaryHtml(inv){
         <input type="checkbox" data-arboris-reported="${inv.id}" ${inv.arborisReported?'checked':''}>
         Déjà reporté dans Arboris
       </label>
-      <a href="https://arboris-lbg.neocities.org/" target="_blank" rel="noopener">Ouvrir Arboris</a>
+      <a href="index.html" target="_blank" rel="noopener">Ouvrir Arboris</a>
     </div>`;
 }
 
@@ -2652,7 +2652,7 @@ function resultForm(inv,step,result){
     </div>
     <div class="button-row">
       <button class="btn primary">Enregistrer et passer à la suite</button>
-      ${showResult?`<a class="btn" href="https://arboris-lbg.neocities.org/" target="_blank" rel="noopener">Ouvrir Arboris</a>`:''}
+      ${showResult?`<a class="btn" href="index.html" target="_blank" rel="noopener">Ouvrir Arboris</a>`:''}
     </div>
   </form>`
 }
