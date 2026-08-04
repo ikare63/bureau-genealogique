@@ -1572,7 +1572,7 @@ header.suite-header > .sister-nav{
 (() => {
 'use strict';
 
-const APP_VERSION='2.8.16';
+const APP_VERSION='2.8.17';
 const LS_KEY='scriptoria-data';
 const BACKUP_KEY='scriptoria-backup';
 const DB_NAME='scriptoria-files';
@@ -4512,7 +4512,7 @@ function ensurePersonFromAct(name,firstNames='',details={}){
     usualName:memory.usualName||parsed.firstNames.split(' ')[0]||'',
     nickname:'',sex:details.sex||memory.sex||'',
     mainOccupation:details.occupation||memory.mainOccupation||'',otherOccupations:'',religion:'',
-    signature:'',notes:[memory.notes,'Fiche restaurée depuis la mémoire compacte après une nouvelle mention.'].filter(Boolean).join('\n'),
+    signature:'',notes:[...new Set([memory.notes,'Fiche restaurée depuis la mémoire compacte après une nouvelle mention.'].filter(Boolean))].join('\n'),
     confidence:memory.confidence||'probable',
     birthDate:details.birthDate||memory.birthDate||'',birthPlace:details.birthPlace||'',
     baptismDate:details.baptismDate||'',baptismPlace:details.baptismPlace||'',
@@ -4740,6 +4740,9 @@ function synchronizeRecordEntities(r){
   const parentsResidence=effectiveResidence(f.familyResidence||f.fatherHome||f.motherHome);
   father=ensurePersonFromAct(f.father,'',{personId:f.fatherPersonId||'',identityDecision:f.fatherIdentityDecision||'new',occupation:f.fatherOccupation,residence:parentsResidence,sourceRecordId:r.id,date:r.date});
   mother=ensurePersonFromAct(f.mother,'',{personId:f.motherPersonId||'',identityDecision:f.motherIdentityDecision||'new',occupation:f.motherOccupation,residence:parentsResidence,sourceRecordId:r.id,date:r.date});
+  if(primary){f.childPersonId=primary.id;f.childIdentityDecision='linked';}
+  if(father){f.fatherPersonId=father.id;f.fatherIdentityDecision='linked';}
+  if(mother){f.motherPersonId=mother.id;f.motherIdentityDecision='linked';}
   if(father&&mother)family=ensureCoupleFamily(father,mother,{unionType:'famille de naissance',place:registerPlace});
   attachChildToParents(primary,father,mother,family);
  }
@@ -4757,6 +4760,8 @@ function synchronizeRecordEntities(r){
    sourceRecordId:r.id,date:r.date
   });
   primary=husband;spouse=wife;
+  if(husband){f.husbandPersonId=husband.id;f.husbandIdentityDecision='linked';}
+  if(wife){f.wifePersonId=wife.id;f.wifeIdentityDecision='linked';}
   family=ensureCoupleFamily(husband,wife,{
    unionType:r.type==='mariage_civil'?'mariage civil':'mariage religieux',
    date:f.marriageDate||r.date,place:f.marriagePlace||registerPlace,
@@ -4771,6 +4776,10 @@ function synchronizeRecordEntities(r){
   const wf=ensurePersonFromAct(f.wifeFather,'',{personId:f.wifeFatherPersonId||'',identityDecision:f.wifeFatherIdentityDecision||'new'});
   const wm=ensurePersonFromAct(f.wifeMother,'',{personId:f.wifeMotherPersonId||'',identityDecision:f.wifeMotherIdentityDecision||'new'});
   const husbandBirthFamily=husband&&hf&&hm?ensureCoupleFamily(hf,hm,{unionType:'famille de naissance'}):null;
+  if(hf){f.husbandFatherPersonId=hf.id;f.husbandFatherIdentityDecision='linked';}
+  if(hm){f.husbandMotherPersonId=hm.id;f.husbandMotherIdentityDecision='linked';}
+  if(wf){f.wifeFatherPersonId=wf.id;f.wifeFatherIdentityDecision='linked';}
+  if(wm){f.wifeMotherPersonId=wm.id;f.wifeMotherIdentityDecision='linked';}
   const wifeBirthFamily=wife&&wf&&wm?ensureCoupleFamily(wf,wm,{unionType:'famille de naissance'}):null;
   if(husband)attachChildToParents(husband,hf,hm,husbandBirthFamily);
   if(wife)attachChildToParents(wife,wf,wm,wifeBirthFamily);
@@ -4785,6 +4794,8 @@ function synchronizeRecordEntities(r){
    occupation:f.occupation
   });
   spouse=ensurePersonFromAct(f.spouse,'',{personId:f.spousePersonId||'',identityDecision:f.spouseIdentityDecision||'new'});
+  if(primary){f.deceasedPersonId=primary.id;f.deceasedIdentityDecision='linked';}
+  if(spouse){f.spousePersonId=spouse.id;f.spouseIdentityDecision='linked';}
   if(primary&&spouse)family=ensureCoupleFamily(primary,spouse,{unionType:'union connue'});
   const parentsResidence=effectiveResidence(f.familyResidence);
   father=ensurePersonFromAct(f.father,'',{
@@ -4795,6 +4806,8 @@ function synchronizeRecordEntities(r){
    personId:f.motherPersonId||'',identityDecision:f.motherIdentityDecision||'new',
    occupation:f.motherOccupation,residence:parentsResidence,sourceRecordId:r.id,date:r.date
   });
+  if(father){f.fatherPersonId=father.id;f.fatherIdentityDecision='linked';}
+  if(mother){f.motherPersonId=mother.id;f.motherIdentityDecision='linked';}
   const birthFamily=father&&mother?ensureCoupleFamily(father,mother,{unionType:'famille de naissance'}):null;
   attachChildToParents(primary,father,mother,birthFamily);
  }
@@ -7971,7 +7984,69 @@ function consolidateFamiliesByExactParents(){
  return changed;
 }
 
+
+function dedupeCollectionById(collectionName){
+ const list=Array.isArray(state[collectionName])?state[collectionName]:[];
+ const seen=new Map();
+ let removed=0;
+ for(const item of list){
+  if(!item||!item.id){continue;}
+  const existing=seen.get(item.id);
+  if(!existing){seen.set(item.id,item);continue;}
+  for(const [key,value] of Object.entries(item)){
+   if((existing[key]===undefined||existing[key]===null||existing[key]==='')&&value!==undefined&&value!==null&&value!=='')existing[key]=value;
+   else if(Array.isArray(value))existing[key]=[...new Set([...(Array.isArray(existing[key])?existing[key]:[]),...value])];
+  }
+  removed++;
+ }
+ state[collectionName]=[...seen.values()];
+ return removed;
+}
+function archivedIdentityTechnicalKey(item={}){
+ const placeholder=safe(item.placeholderKey).trim();
+ if(placeholder)return `placeholder:${placeholder}`;
+ const identity=safe(item.identityKey||personIdentityKey(item.lastName,item.firstNames));
+ if(!identity)return '';
+ return [
+  identity,safe(item.birthDate),safe(item.deathDate),norm(item.mainOccupation),norm(item.residence),
+  norm(safe(item.notes).replace(/Fiche restaurée depuis la mémoire compacte après une nouvelle mention\.?/gi,''))
+ ].join('||');
+}
+function dedupeArchivedIdentityMemory(){
+ state.settings=state.settings||{};
+ const list=Array.isArray(state.settings.archivedIdentityMemory)?state.settings.archivedIdentityMemory:[];
+ const seenIds=new Set(),seenTechnical=new Map(),out=[];
+ let removed=0;
+ for(const item of list){
+  if(!item)continue;
+  if(item.id&&seenIds.has(item.id)){removed++;continue;}
+  const key=archivedIdentityTechnicalKey(item);
+  if(key&&seenTechnical.has(key)){
+   const keep=seenTechnical.get(key);
+   keep.notes=[...new Set([safe(keep.notes),safe(item.notes)].filter(Boolean))].join('\n');
+   removed++;continue;
+  }
+  if(item.id)seenIds.add(item.id);
+  if(key)seenTechnical.set(key,item);
+  out.push(item);
+ }
+ state.settings.archivedIdentityMemory=out;
+ return removed;
+}
+function cleanupTechnicalDuplicateState(){
+ let removed=0;
+ for(const name of ['records','people','families','registers','pages','places','research','relations','sources'])removed+=dedupeCollectionById(name);
+ removed+=dedupeArchivedIdentityMemory();
+ if(removed){
+  state.metadata=state.metadata||{};
+  state.metadata.duplicatePreventionCleanupAt=now();
+  state.metadata.duplicatePreventionCleanupCount=(state.metadata.duplicatePreventionCleanupCount||0)+removed;
+ }
+ return removed;
+}
+
 function rebuildEntitiesFromExistingRecords(){
+ const technicalDuplicatesRemoved=cleanupTechnicalDuplicateState();
  normalizeExistingHistoricalNames();
  ensureMentionIds();
  normalizeIdentityGraph();
@@ -7983,7 +8058,7 @@ function rebuildEntitiesFromExistingRecords(){
  migrateResidences();
  migrateStructuredAges();
  const removed=cleanupExactTechnicalClones();
- if(removed)saveState(true);
+ if(removed||technicalDuplicatesRemoved)saveState(true);
 }
 async function init(){
  applyTheme(state.settings?.theme||'light');
