@@ -1526,6 +1526,14 @@ header.suite-header > .sister-nav{
  resize:vertical;
 }
 
+
+/* Scriptoria 2.8.18 — réseaux, carte sociale et fiabilité */
+.reliability-box{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:center}
+.reliability-score{width:72px;height:72px;border:2px solid var(--line);border-radius:50%;display:grid;place-items:center;font-size:1.35rem;font-weight:900;background:var(--panel2)}
+.reliability-meter{height:10px;border:1px solid var(--line);border-radius:999px;overflow:hidden;margin:.35rem 0}.reliability-meter span{display:block;height:100%;background:var(--text)}
+.social-map-wrap{border:1.5px solid var(--line);border-radius:12px;background:var(--panel);overflow:auto;padding:8px}.social-map{width:100%;min-width:620px;height:auto;display:block}.social-map .edge{stroke:var(--muted);stroke-width:1.5;opacity:.65}.social-map .edge.strong{stroke-width:3;opacity:.9}.social-map .node{fill:var(--panel2);stroke:var(--text);stroke-width:1.5}.social-map .node.focus{fill:var(--text);stroke:var(--text)}.social-map text{font-family:inherit;font-size:12px;fill:var(--text)}.social-map text.focus{fill:var(--bg);font-weight:800}.network-ranking{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.network-rank{border:1px solid var(--line);border-radius:10px;padding:10px;background:var(--panel)}
+@media(max-width:700px){.reliability-box{grid-template-columns:1fr}.social-map{min-width:540px}}
+
 </style>
 </head>
 <body>
@@ -1572,7 +1580,7 @@ header.suite-header > .sister-nav{
 (() => {
 'use strict';
 
-const APP_VERSION='2.8.17';
+const APP_VERSION='2.8.18';
 const LS_KEY='scriptoria-data';
 const BACKUP_KEY='scriptoria-backup';
 const DB_NAME='scriptoria-files';
@@ -1710,7 +1718,7 @@ function migrate(s){
  const base=DEFAULT_STATE(); s=s&&typeof s==='object'?s:{};
  for(const k of Object.keys(base))if(!(k in s))s[k]=base[k];
  for(const arr of ['records','people','families','registers','pages','places','research','relations','sources'])if(!Array.isArray(s[arr]))s[arr]=[];
- s.settings={...base.settings,...(s.settings||{})};
+ s.settings={...base.settings,...(s.settings||{})};s.settings.networkAnalysis={enabled:true,showSocialMap:true,showReliabilityIndex:true,...(s.settings.networkAnalysis||{})};s.settings.reliabilityWeights=s.settings.reliabilityWeights||{records:30,birth:18,death:15,parents:12,family:10,occupation:5,residence:5,signature:3};
  s.metadata={...base.metadata,...(s.metadata||{})};
  s.version='1.0'; return s;
 }
@@ -5605,6 +5613,73 @@ function renderGenealogyTree(personId){
    </div>`:''}
  </div>`;
 }
+
+function personReliability(person){
+ if(!person)return{score:0,label:'Inconnue',reasons:[]};
+ let score=0;const reasons=[];
+ const records=(person.recordIds||[]).map(id=>byId(state.records,id)).filter(Boolean);
+ const hasBirth=!!(person.birthDate||person.baptismDate);
+ const hasDeath=!!(person.deathDate||person.burialDate);
+ const hasParents=(person.parentIds||[]).length>=1;
+ const hasFamily=(person.familyIds||[]).length>0||(person.spouseIds||[]).length>0;
+ if(records.length){score+=Math.min(30,10+records.length*5);reasons.push(`${records.length} acte(s) lié(s)`)}
+ if(hasBirth){score+=18;reasons.push('naissance ou baptême daté')}
+ if(hasDeath){score+=15;reasons.push('décès ou sépulture daté')}
+ if(hasParents){score+=12;reasons.push('filiation connue')}
+ if(hasFamily){score+=10;reasons.push('famille ou conjoint lié')}
+ if(person.mainOccupation){score+=5;reasons.push('profession connue')}
+ if(person.residence){score+=5;reasons.push('domicile connu')}
+ if(person.signature){score+=3;reasons.push('signature documentée')}
+ const confidence=norm(person.confidence||'certain');
+ if(confidence.includes('verifier'))score-=25;
+ else if(confidence.includes('hypothetique'))score-=18;
+ else if(confidence.includes('probable'))score-=8;
+ if((person.distinctFromIds||[]).length)score+=2;
+ score=Math.max(0,Math.min(100,Math.round(score)));
+ const label=score>=80?'Très solide':score>=60?'Solide':score>=40?'Moyenne':score>=20?'Fragile':'Très fragile';
+ return{score,label,reasons};
+}
+function personReliabilityHTML(person){
+ const r=personReliability(person);
+ return `<div class="reliability-box"><div class="reliability-score">${r.score}</div><div><strong>${esc(r.label)}</strong><div class="reliability-meter"><span style="width:${r.score}%"></span></div><div class="small muted">${esc(r.reasons.join(' · ')||'Très peu d’éléments structurés')}</div></div></div>`;
+}
+function socialNetworkEdges(){
+ const edges=new Map();
+ const add=(a,b,type,recordId)=>{
+  if(!a||!b||a===b)return;
+  const ids=[a,b].sort(),key=ids.join('|');
+  const row=edges.get(key)||{a:ids[0],b:ids[1],weight:0,types:new Set(),recordIds:new Set()};
+  row.weight++;row.types.add(type);if(recordId)row.recordIds.add(recordId);edges.set(key,row);
+ };
+ for(const r of state.records||[]){
+  const f=r.fields||{};
+  if(f.childPersonId){for(const x of f.godparents||[])add(f.childPersonId,x.personId,x.role||'Parrainage',r.id)}
+  const couple=[f.husbandPersonId,f.wifePersonId].filter(Boolean);
+  for(const spouse of couple)for(const x of f.witnessesDetailed||[])add(spouse,x.personId,'Témoin de mariage',r.id);
+  if(f.deceasedPersonId)for(const x of f.burialWitnesses||[])add(f.deceasedPersonId,x.personId,'Témoin de sépulture',r.id);
+ }
+ return [...edges.values()];
+}
+function networkCentralityRows(){
+ const scores=new Map();
+ for(const e of socialNetworkEdges())for(const id of [e.a,e.b])scores.set(id,(scores.get(id)||0)+e.weight);
+ return [...scores.entries()].map(([id,score])=>({person:byId(state.people,id),score})).filter(x=>x.person).sort((a,b)=>b.score-a.score||personName(a.person).localeCompare(personName(b.person),'fr'));
+}
+function socialMapForPerson(personId){
+ const focus=byId(state.people,personId);if(!focus)return empty();
+ const edges=socialNetworkEdges().filter(e=>e.a===personId||e.b===personId).sort((a,b)=>b.weight-a.weight).slice(0,14);
+ if(!edges.length)return '<div class="notice">Aucune relation sociale structurée n’est encore reliée à cette personne.</div>';
+ const cx=400,cy=230,radius=175;let svg='';
+ edges.forEach((e,i)=>{const id=e.a===personId?e.b:e.a;const p=byId(state.people,id);if(!p)return;const angle=(Math.PI*2*i/edges.length)-Math.PI/2;const x=cx+Math.cos(angle)*radius,y=cy+Math.sin(angle)*radius;e.x=x;e.y=y;e.person=p;svg+=`<line class="edge ${e.weight>=3?'strong':''}" x1="${cx}" y1="${cy}" x2="${x}" y2="${y}"><title>${esc([...e.types].join(', '))} · ${e.weight} lien(s)</title></line>`});
+ svg+=`<circle class="node focus" cx="${cx}" cy="${cy}" r="44"></circle><text class="focus" x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="middle">${esc((focus.usualName||focus.firstNames||'').slice(0,12))}</text>`;
+ edges.forEach(e=>{if(!e.person)return;svg+=`<g data-action="select-relation-person" data-id="${esc(e.person.id)}" style="cursor:pointer"><circle class="node" cx="${e.x}" cy="${e.y}" r="36"></circle><text x="${e.x}" y="${e.y-4}" text-anchor="middle">${esc((e.person.usualName||e.person.firstNames||'').slice(0,11))}</text><text x="${e.x}" y="${e.y+12}" text-anchor="middle">${esc((e.person.lastName||'').slice(0,12))}</text><text x="${e.x}" y="${e.y+51}" text-anchor="middle">${e.weight} lien(s)</text></g>`});
+ return `<div class="social-map-wrap"><svg class="social-map" viewBox="0 0 800 460" role="img" aria-label="Carte sociale de ${esc(personName(focus))}">${svg}</svg></div>`;
+}
+function renderNetworkAnalysis(){
+ const top=networkCentralityRows().slice(0,12);
+ const edges=socialNetworkEdges();
+ return `<section class="panel"><h3>Analyse globale des réseaux</h3><div class="grid cards"><div class="card stat"><span>Liens sociaux structurés</span><strong>${edges.reduce((s,e)=>s+e.weight,0)}</strong></div><div class="card stat"><span>Paires de personnes reliées</span><strong>${edges.length}</strong></div><div class="card stat"><span>Personnes dans le réseau</span><strong>${new Set(edges.flatMap(e=>[e.a,e.b])).size}</strong></div></div><h4>Personnes les plus centrales</h4><div class="network-ranking">${top.map((x,i)=>`<button class="network-rank" data-action="select-relation-person" data-id="${esc(x.person.id)}"><strong>${i+1}. ${personNameHTML(x.person)}</strong><div>${x.score} interaction(s) documentée(s)</div><div class="small muted">Fiabilité ${personReliability(x.person).score}/100</div></button>`).join('')||empty()}</div></section>`;
+}
 function renderSocialPanel(personId){
  const entries=socialReligiousRelationsForPerson(personId);
  return `<aside class="social-relations-panel">
@@ -5672,11 +5747,12 @@ function renderRelationsBrowser(){
     <button data-action="view-person" data-id="${esc(selected.id)}">Ouvrir la fiche complète</button>
    </div>
 
+   <div class="grid two" style="margin-bottom:1rem"><div class="card"><h3>Indice de fiabilité</h3>${personReliabilityHTML(selected)}</div><div class="card"><h3>Carte sociale</h3><div class="small muted">Clique sur une personne pour centrer l’analyse sur elle.</div>${socialMapForPerson(selected.id)}</div></div>
    <div class="tree-relations-layout ${mode}">
     ${(mode==='social'||mode==='all')?renderSocialPanel(selected.id):''}
     ${(mode==='blood'||mode==='all')?`<section class="tree-panel"><h3>Arbre généalogique</h3>${renderGenealogyTree(selected.id)}</section>`:''}
-   </div>`:
-   `<div class="empty">Commence par rechercher puis sélectionner une personne.</div>`}
+   </div>${renderNetworkAnalysis()}`:
+   `<div class="empty">Commence par rechercher puis sélectionner une personne.</div>${renderNetworkAnalysis()}`}
  </section>`;
 }
 
@@ -5707,7 +5783,7 @@ function viewPerson(id){
    <p><strong>Religion :</strong> ${esc(p.religion||'—')}</p>
    <p><strong>Signature connue :</strong> ${esc(p.signature||'—')}</p>
    <p><strong>Domicile principal :</strong> ${esc(p.residence||'Bourg')}</p>
-   <p><strong>Niveau de confiance :</strong> ${esc(p.confidence||'—')}</p>
+   <p><strong>Niveau de confiance :</strong> ${esc(p.confidence||'—')}</p><h4>Indice de fiabilité documentaire</h4>${personReliabilityHTML(p)}
   </div>
   <div class="card"><strong>Professions</strong>
    ${occupations.length?`<ul>${occupations.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'<p>Non renseignées</p>'}
@@ -6912,6 +6988,18 @@ function renderDemographyTable(headers,rows){
  return `<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(row=>`<tr>${row.map(c=>`<td>${c}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${headers.length}">Aucune donnée exploitable</td></tr>`}</tbody></table></div>`;
 }
 
+
+function birthBaptismDelayData(records){
+ const rows=[];for(const r of records){if(r.type!=='baptisme')continue;const f=r.fields||{},b=parseDateSafe(f.birthDate),bp=parseDateSafe(f.baptismDate||r.date);if(!b||!bp)continue;const days=Math.round((bp-b)/86400000);if(days>=0&&days<90)rows.push({record:r,days})}return rows;
+}
+function ageAtDeathBySex(records){
+ const allowed=new Set(records.map(r=>r.id));return precisePersonLifespans().filter(x=>(x.p.recordIds||[]).some(id=>allowed.has(id))).reduce((o,x)=>{const s=x.p.sex==='F'?'F':x.p.sex==='M'?'M':'U';o[s].push(x.age);return o},{F:[],M:[],U:[]});
+}
+function marriageAgeBySexFiltered(records){
+ const ids=new Set(records.map(r=>r.id)),o={F:[],M:[]};for(const x of marriageAgeData())if(ids.has(x.r.id))o[x.role==='Épouse'?'F':'M'].push(x.value);return o;
+}
+function familySizeDistribution(){const counts=familyFertilityData().map(x=>x.count);return [['1 enfant',counts.filter(x=>x===1).length],['2 enfants',counts.filter(x=>x===2).length],['3 à 4 enfants',counts.filter(x=>x>=3&&x<=4).length],['5 enfants et plus',counts.filter(x=>x>=5).length]]}
+function celebrantStatsForRecords(records){const map=new Map();for(const r of records){if(r.type==='libre')continue;const p=safe(r.fields?.priest).trim()||'Non renseigné';map.set(p,(map.get(p)||0)+1)}return [...map.entries()].sort((a,b)=>b[1]-a[1])}
 function renderDemography(){
  const records=filteredDemographyRecords();
  const filters=demographyFilters();
@@ -6931,6 +7019,12 @@ function renderDemography(){
  const lent=lentComparison(records);
  const decadesRows=decadeComparison(records);
  const quality=demographyQualitySummary(records);
+ const baptismDelays=birthBaptismDelayData(records);
+ const deathAges=ageAtDeathBySex(records);
+ const marriageAges=marriageAgeBySexFiltered(records);
+ const familySizes=familySizeDistribution();
+ const celebrants=celebrantStatsForRecords(records);
+ const sexRatio=sexEvents.births.F?sexEvents.births.M/sexEvents.births.F*100:null;
 
  const observedPopulation=demographyRecordPersonIds(records).size;
  const completeLabel=quality.complete?'Corpus déclaré complet':'Population observée seulement';
@@ -6978,6 +7072,24 @@ function renderDemography(){
    <div class="card stat"><span>Femmes ou filles décédées</span><strong>${sexEvents.deaths.F}</strong><small>décès ou sépultures</small></div>
    <div class="card stat"><span>Hommes ou garçons décédés</span><strong>${sexEvents.deaths.M}</strong><small>décès ou sépultures</small></div>
    <div class="card stat"><span>Sexe non renseigné au décès</span><strong>${sexEvents.deaths.U}</strong></div>
+  </div>
+
+  <h3 class="section-title">Nouveaux indicateurs</h3>
+  <div class="grid cards">
+   <div class="card stat"><span>Rapport garçons / 100 filles</span><strong>${sexRatio===null?'—':sexRatio.toFixed(1).replace('.',',')}</strong><small>parmi les naissances sexuées</small></div>
+   <div class="card stat"><span>Délai médian naissance–baptême</span><strong>${baptismDelays.length?`${median(baptismDelays.map(x=>x.days)).toFixed(1).replace('.',',')} j`:'—'}</strong><small>${baptismDelays.length} baptême(s) exploitables</small></div>
+   <div class="card stat"><span>Âge médian au décès — femmes</span><strong>${deathAges.F.length?`${median(deathAges.F).toFixed(1).replace('.',',')} ans`:'—'}</strong><small>${deathAges.F.length} vie(s) complète(s)</small></div>
+   <div class="card stat"><span>Âge médian au décès — hommes</span><strong>${deathAges.M.length?`${median(deathAges.M).toFixed(1).replace('.',',')} ans`:'—'}</strong><small>${deathAges.M.length} vie(s) complète(s)</small></div>
+   <div class="card stat"><span>Âge médian au mariage — femmes</span><strong>${marriageAges.F.length?`${median(marriageAges.F).toFixed(1).replace('.',',')} ans`:'—'}</strong><small>${marriageAges.F.length} cas</small></div>
+   <div class="card stat"><span>Âge médian au mariage — hommes</span><strong>${marriageAges.M.length?`${median(marriageAges.M).toFixed(1).replace('.',',')} ans`:'—'}</strong><small>${marriageAges.M.length} cas</small></div>
+  </div>
+  <div class="grid two">
+   <div class="card"><h3>Délai entre naissance et baptême</h3>${renderDemographyTable(['Délai','Nombre'],[['Le jour même',baptismDelays.filter(x=>x.days===0).length],['Le lendemain',baptismDelays.filter(x=>x.days===1).length],['2 à 3 jours',baptismDelays.filter(x=>x.days>=2&&x.days<=3).length],['4 jours ou plus',baptismDelays.filter(x=>x.days>=4).length]])}</div>
+   <div class="card"><h3>Taille des familles reconstituées</h3>${renderDemographyTable(['Enfants connus','Familles'],familySizes)}</div>
+  </div>
+  <div class="grid two">
+   <div class="card"><h3>Répartition des célébrants</h3>${renderDemographyTable(['Célébrant','Actes'],celebrants.map(x=>[esc(x[0]),x[1]]))}</div>
+   <div class="card"><h3>Réseau social du corpus</h3><p><strong>${socialNetworkEdges().length}</strong> paires reliées et <strong>${socialNetworkEdges().reduce((s,e)=>s+e.weight,0)}</strong> interactions documentées.</p><p class="stats-method">Sont comptés les parrainages et les témoignages de mariage ou de sépulture dont les personnes sont reliées à des fiches.</p></div>
   </div>
 
   <h3 class="section-title">Comparaison par décennie</h3>
