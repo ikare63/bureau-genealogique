@@ -1534,6 +1534,29 @@ header.suite-header > .sister-nav{
 .social-map-wrap{border:1.5px solid var(--line);border-radius:12px;background:var(--panel);overflow:auto;padding:8px}.social-map{width:100%;min-width:620px;height:auto;display:block}.social-map .edge{stroke:var(--muted);stroke-width:1.5;opacity:.65}.social-map .edge.strong{stroke-width:3;opacity:.9}.social-map .node{fill:var(--panel2);stroke:var(--text);stroke-width:1.5}.social-map .node.focus{fill:var(--text);stroke:var(--text)}.social-map text{font-family:inherit;font-size:12px;fill:var(--text)}.social-map text.focus{fill:var(--bg);font-weight:800}.network-ranking{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.network-rank{border:1px solid var(--line);border-radius:10px;padding:10px;background:var(--panel)}
 @media(max-width:700px){.reliability-box{grid-template-columns:1fr}.social-map{min-width:540px}}
 
+
+/* Scriptoria 3.5 — architecture analytique */
+.proposal-card{border-left:5px solid var(--line);padding:14px}.proposal-score{font-size:1.2rem;font-weight:900}.evidence-list{margin:.55rem 0;padding-left:1.25rem}.stat-matrix{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}.stat-tile{border:1.5px solid var(--line);border-radius:10px;padding:12px;background:var(--panel)}.stat-tile strong{display:block;font-size:1.45rem}.journal-entry{border-left:4px solid var(--line);padding:8px 12px;margin:8px 0;background:var(--panel2)}.review-intro{margin-bottom:12px}.profession-button,.clergy-button{width:100%;justify-content:space-between;text-align:left}.kinship-rule{font-size:.84rem;color:var(--muted);margin-top:5px}.confidence-high{border-left-color:#277a48}.confidence-medium{border-left-color:#a36b00}.confidence-low{border-left-color:#777}
+
+
+/* Scriptoria 3.5.3 — professions : personnes uniques vs mentions */
+.profession-button{display:flex;justify-content:space-between;align-items:center;gap:14px;text-align:left;width:100%}
+.profession-button>span{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+.profession-button>span:last-child{align-items:flex-end;min-width:76px}
+.profession-button>span:last-child strong{font-size:1.35rem}
+@media(max-width:560px){.profession-button{align-items:flex-start}.profession-button>span:last-child{min-width:64px}}
+
+
+/* Scriptoria 3.5.5 — détecteur de sexe d'après les prénoms du registre */
+.first-name-sex-hint{
+ display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;
+ margin-top:.35rem;font-size:.78rem;color:var(--muted)
+}
+.first-name-sex-hint .badge{font-weight:800}
+.first-name-sex-hint[data-status="certain"] .badge{border-color:var(--green);color:var(--green)}
+.first-name-sex-hint[data-status="ambiguous"] .badge{border-color:var(--warn);color:var(--warn)}
+.first-name-sex-hint[data-status="unknown"] .badge{border-color:var(--muted);color:var(--muted)}
+
 </style>
 </head>
 <body>
@@ -1580,7 +1603,7 @@ header.suite-header > .sister-nav{
 (() => {
 'use strict';
 
-const APP_VERSION='2.8.18';
+const APP_VERSION='3.5.5';
 const LS_KEY='scriptoria-data';
 const BACKUP_KEY='scriptoria-backup';
 const DB_NAME='scriptoria-files';
@@ -1594,7 +1617,7 @@ const TYPE_LABELS={
 };
 const NAVS=[
  ['dashboard','Tableau de bord'],['registers','Registres'],['people','Individus'],['families','Familles'],
- ['research','Recherches'],['demography','Démographie historique'],['review','À vérifier'],['settings','Réglages']
+ ['research','Recherches'],['demography','Statistiques'],['review','À vérifier'],['settings','Réglages']
 ];
 const DEFAULT_STATE=()=>({
  version:'1.0',
@@ -1718,7 +1741,7 @@ function migrate(s){
  const base=DEFAULT_STATE(); s=s&&typeof s==='object'?s:{};
  for(const k of Object.keys(base))if(!(k in s))s[k]=base[k];
  for(const arr of ['records','people','families','registers','pages','places','research','relations','sources'])if(!Array.isArray(s[arr]))s[arr]=[];
- s.settings={...base.settings,...(s.settings||{})};s.settings.networkAnalysis={enabled:true,showSocialMap:true,showReliabilityIndex:true,...(s.settings.networkAnalysis||{})};s.settings.reliabilityWeights=s.settings.reliabilityWeights||{records:30,birth:18,death:15,parents:12,family:10,occupation:5,residence:5,signature:3};
+ s.settings={...base.settings,...(s.settings||{})};s.settings.networkAnalysis={enabled:true,showSocialMap:true,showReliabilityIndex:true,...(s.settings.networkAnalysis||{})};s.settings.reliabilityWeights=s.settings.reliabilityWeights||{records:30,birth:18,death:15,parents:12,family:10,occupation:5,residence:5,signature:3};s.settings.scriptoria35={familyProposals:true,kinshipInference:true,qualityAnalysis:true,statisticsModules:true,...(s.settings.scriptoria35||{})};s.settings.sectionViews=s.settings.sectionViews||{};s.researchJournal=Array.isArray(s.researchJournal)?s.researchJournal:[];
  s.metadata={...base.metadata,...(s.metadata||{})};
  s.version='1.0'; return s;
 }
@@ -1779,6 +1802,87 @@ function recordIncomplete(r){
  return !r.date||!r.commune||!r.pageNumber||!recordMainName(r)||recordMainName(r)==='Personne non renseignée';
 }
 function norm(s){return safe(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim()}
+
+function firstWordGivenName(value=''){
+ const tokens=safe(value).trim().split(/\s+/).filter(Boolean);
+ const ignored=new Set(['me','maitre','sieur','demoiselle','veuve','veuf']);
+ while(tokens.length&&ignored.has(norm(tokens[0])))tokens.shift();
+ return norm(tokens[0]||'');
+}
+function addFirstNameSexEvidence(map,name,sex,source=''){
+ const first=firstWordGivenName(name);
+ const normalizedSex=sex==='M'||sex==='F'?sex:'';
+ if(!first||!normalizedSex)return;
+ const row=map.get(first)||{M:0,F:0,sources:new Set()};
+ row[normalizedSex]++;
+ if(source)row.sources.add(source);
+ map.set(first,row);
+}
+function learnedFirstNameSexDictionary(){
+ const map=new Map();
+ for(const p of state.people||[])addFirstNameSexEvidence(map,personName(p),p.sex,'fiche');
+ for(const r of state.records||[]){
+  const f=r.fields||{};
+  addFirstNameSexEvidence(map,[f.firstNames,f.childName].filter(Boolean).join(' '),f.sex,'enfant ou défunt');
+  addFirstNameSexEvidence(map,f.father,'M','père');
+  addFirstNameSexEvidence(map,f.mother,'F','mère');
+  addFirstNameSexEvidence(map,f.husband,'M','époux');
+  addFirstNameSexEvidence(map,f.wife,'F','épouse');
+  for(const item of f.godparents||[])addFirstNameSexEvidence(map,item.name,item.role==='Parrain'?'M':item.role==='Marraine'?'F':item.sex,'parrainage');
+  for(const group of ['witnessesDetailed','burialWitnesses','deathDeclarants']){
+   for(const item of f[group]||[]){
+    const roleText=norm([item.role,item.familyLink,item.quality,item.relationStructured?.base].filter(Boolean).join(' '));
+    const certain=/(^| )(pere|epoux|mari|frere|oncle|neveu|fils|parrain|veuf)( |$)/.test(roleText)?'M':
+      /(^| )(mere|epouse|femme|soeur|tante|niece|fille|marraine|veuve)( |$)/.test(roleText)?'F':'';
+    addFirstNameSexEvidence(map,item.name,item.sex||certain,'témoignage');
+   }
+  }
+ }
+ return map;
+}
+function inferSexFromFirstName(value='',options={}){
+ const first=firstWordGivenName(value);
+ if(!first)return{sex:'',status:'unknown',firstName:'',male:0,female:0,total:0};
+ const row=learnedFirstNameSexDictionary().get(first);
+ if(!row)return{sex:'',status:'unknown',firstName:first,male:0,female:0,total:0};
+ const male=row.M||0,female=row.F||0,total=male+female;
+ if(male&&female)return{sex:'',status:'ambiguous',firstName:first,male,female,total};
+ const sex=male?'M':female?'F':'';
+ const minimum=options.minimumEvidence??1;
+ return{sex:total>=minimum?sex:'',status:total>=minimum&&sex?'certain':'unknown',firstName:first,male,female,total};
+}
+function updateFirstNameSexHint(row){
+ const input=row?.querySelector('[data-person-field="name"]');
+ const sexInput=row?.querySelector('[data-person-field="sex"]');
+ const hint=row?.querySelector('[data-first-name-sex-hint]');
+ if(!input||!sexInput||!hint)return;
+ const result=inferSexFromFirstName(input.value,{minimumEvidence:1});
+ if(!sexInput.dataset.manual&&result.sex)sexInput.value=result.sex;
+ if(result.status==='certain'){
+  hint.dataset.status='certain';
+  hint.innerHTML=`<span class="badge">${result.sex==='M'?'Homme':'Femme'} suggéré·e</span><span>Prénom « ${esc(result.firstName)} » observé ${result.total} fois avec ce sexe dans le registre.</span>`;
+ }else if(result.status==='ambiguous'){
+  hint.dataset.status='ambiguous';
+  hint.innerHTML=`<span class="badge">Prénom ambigu</span><span>${result.male} homme(s) et ${result.female} femme(s) déjà observé(s) : aucun sexe attribué.</span>`;
+  if(!sexInput.dataset.manual)sexInput.value='';
+ }else{
+  hint.dataset.status='unknown';
+  hint.innerHTML='<span class="badge">Sexe non déduit</span><span>Prénom absent ou encore insuffisamment documenté dans le registre.</span>';
+  if(!sexInput.dataset.manual)sexInput.value='';
+ }
+}
+function initFirstNameSexDetectors(scope=document){
+ scope.querySelectorAll('.person-repeatable-item').forEach(row=>{
+  const input=row.querySelector('[data-person-field="name"]');
+  if(!input||input.dataset.sexDetectorBound==='1')return;
+  input.dataset.sexDetectorBound='1';
+  const refresh=()=>updateFirstNameSexHint(row);
+  input.addEventListener('input',refresh);
+  input.addEventListener('blur',refresh);
+  row.querySelector('[data-person-field="role"]')?.addEventListener('change',refresh);
+  refresh();
+ });
+}
 function downloadBlob(blob,name){
  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();
  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},500);
@@ -1961,7 +2065,8 @@ function personRepeatableItem(name,item={},index=0,opts={}){
    <input type="hidden" data-person-field="mentionId" value="${esc(item.mentionId||uid('mention'))}">
    <input type="hidden" data-person-field="personId" value="${esc(item.personId||'')}">
    <input type="hidden" data-person-field="identityDecision" value="${esc(item.identityDecision||(item.personId?'linked':(item.forceNewPerson?'new':'unresolved')))}">
-   <div class="field ${roleSelect?'half':'wide'}"><label>Nom et prénoms</label><input data-person-field="name" value="${esc(item.name||'')}" autocomplete="off"></div>
+   <input type="hidden" data-person-field="sex" value="${esc(item.sex||'')}">
+   <div class="field ${roleSelect?'half':'wide'}"><label>Nom et prénoms</label><input data-person-field="name" value="${esc(item.name||'')}" autocomplete="off"><div class="first-name-sex-hint" data-first-name-sex-hint data-status="unknown"></div></div>
    <div class="field half"><label class="form-check"><input class="form-check-input" type="checkbox" data-person-field="nameToVerify" ${item.nameToVerify===true||item.nameToVerify==='oui'?'checked':''}><span class="form-check-label">Nom à vérifier</span></label></div>
    <div class="field wide homonym-warning" data-homonym-warning hidden></div>
    <div class="field wide person-identity-choice">
@@ -2017,7 +2122,7 @@ function personRepeatableItem(name,item={},index=0,opts={}){
     </div>
     <input type="hidden" data-person-field="home" value="${esc(composeResidence(residence.hamlet,residence.village))}">
    </details>`})()}
-   <div class="field half"><label>Autre qualité</label><input data-person-field="quality" value="${esc(cleanedQuality)}" placeholder="Ex. Sieur, parrain, épouse de…"></div>
+   <div class="field half"><label>Autre qualité ou lien</label><input data-person-field="quality" value="${esc(cleanedQuality)}" placeholder="Ex. Sieur, parrain, épouse de…"></div>
    <div class="field half"><label class="form-check"><input class="form-check-input" type="checkbox" data-person-field="signed" ${item.signed==='oui'||item.signed===true?'checked':''}><span class="form-check-label">Signature ?</span></label></div>
    <div class="field wide"><label>Note sur la signature <span class="optional-badge">facultatif</span></label><input data-person-field="signatureNote" value="${esc(item.signatureNote||'')}" placeholder="Ex. signature difficile à lire, graphie différente…"></div>
   </div>
@@ -2028,6 +2133,11 @@ function readPersonRepeatable(form,name){
   role:row.querySelector('[data-person-field="role"]')?.value||'',
   mentionId:row.querySelector('[data-person-field="mentionId"]')?.value||uid('mention'),
   name:row.querySelector('[data-person-field="name"]')?.value.trim()||'',
+  sex:row.querySelector('[data-person-field="sex"]')?.value||'',
+  sexInference:row.querySelector('[data-person-field="sex"]')?.value?{
+   method:'first-name-register-learning',
+   firstName:firstWordGivenName(row.querySelector('[data-person-field="name"]')?.value||'')
+  }:null,
   nameToVerify:row.querySelector('[data-person-field="nameToVerify"]')?.checked===true,
   personId:row.querySelector('[data-person-field="personId"]')?.value||'',
   identityDecision:row.querySelector('[data-person-field="identityDecision"]')?.value||'unresolved',
@@ -2120,8 +2230,19 @@ const SECTION_VIEWS={
   ['review','À vérifier']
  ],
  demography:[
-  ['demography','Vue d’ensemble'],
-  ['stats','Statistiques générales']
+  ['demography','Démographie'],
+  ['professions','Professions'],
+  ['signatures','Signatures'],
+  ['clergy','Clergé'],
+  ['networks','Réseaux']
+ ],
+ review:[
+  ['inconsistencies','Incohérences'],
+  ['homonyms','Homonymes'],
+  ['surnames','Patronymes douteux'],
+  ['family-proposals','Familles proposées'],
+  ['relation-proposals','Relations proposées'],
+  ['waiting','En attente']
  ]
 };
 function currentSectionView(section){
@@ -2148,11 +2269,17 @@ function renderRegistersHub(){
 function renderResearchHub(){
  const view=currentSectionView('research');
  const fn={research:renderResearch,surnames:renderSurnames,places:renderPlaces,relations:renderRelations,'surname-watch':renderSurnameWatch,review:renderReviewQueue}[view]||renderResearch;
- return `${renderSectionTabs('research')}${fn()}`;
+ let content='';
+ try{content=fn();}
+ catch(error){
+  console.error(`Erreur dans Recherches → ${view}`,error);
+  content=`<section class="panel"><div class="notice danger"><strong>Le sous-onglet n’a pas pu être affiché.</strong><div>${esc(error?.message||'Erreur inconnue')}</div></div><div class="toolbar"><button type="button" data-action="section-view" data-section="research" data-view="research">Revenir aux recherches</button></div></section>`;
+ }
+ return `${renderSectionTabs('research')}${content}`;
 }
 function renderDemographyHub(){
  const view=currentSectionView('demography');
- const fn={demography:renderDemography,stats:renderStats}[view]||renderDemography;
+ const fn={demography:renderDemography,professions:renderProfessionStatistics,signatures:renderSignatureStatistics,clergy:renderClergyStatistics,networks:renderNetworkStatistics}[view]||renderDemography;
  return `${renderSectionTabs('demography')}${fn()}`;
 }
 function renderRegisterProgress(){
@@ -3037,6 +3164,225 @@ function renderReviewItems(items,category){
   <div class="toolbar">${anomalyLinkButtons(a,category)}</div>
  </article>`).join('');
 }
+
+function logResearchAction(kind,label,details={}){
+ state.researchJournal=Array.isArray(state.researchJournal)?state.researchJournal:[];
+ state.researchJournal.push({id:uid('journal'),date:now(),kind,label,details});
+ if(state.researchJournal.length>500)state.researchJournal=state.researchJournal.slice(-500);
+}
+function relationItemsFromRecord(r){
+ const f=r.fields||{},out=[];
+ for(const group of ['godparents','witnessesDetailed','burialWitnesses','deathDeclarants'])for(const item of f[group]||[])out.push({record:r,group,item});
+ return out;
+}
+function kinshipRuleForMention(r,item){
+ const rs=item.relationStructured||{};
+ const source=norm([item.familyLink,rs.base,rs.branch,rs.nature].filter(Boolean).join(' '));
+ const f=r.fields||{};
+ if(!item.personId)return null;
+ const paternal=source.includes('paternel');
+ const maternal=source.includes('maternel');
+ const uncle=source.includes('oncle');
+ const aunt=source.includes('tante');
+ const alliance=source.includes('alliance');
+ if(!(paternal||maternal)||!(uncle||aunt))return null;
+ const parentId=paternal?f.fatherPersonId:f.motherPersonId;
+ if(!parentId)return null;
+ return{
+  recordId:r.id,sourcePersonId:item.personId,parentId,
+  relation:uncle?'frère':'sœur',branch:paternal?'paternelle':'maternelle',
+  byAlliance:alliance,
+  explanation:alliance
+   ?`${item.name||'Cette personne'} est ${uncle?'oncle':'tante'} ${paternal?'paternel·le':'maternel·le'} par alliance : aucun lien de fratrie de sang n’est imposé.`
+   :`${item.name||'Cette personne'} est ${uncle?'oncle':'tante'} ${paternal?'paternel·le':'maternel·le'} : ${uncle?'il est le frère':'elle est la sœur'} ${paternal?'du père':'de la mère'}.`
+ };
+}
+function kinshipRelationProposals(){
+ const out=[];
+ for(const r of state.records||[])for(const x of relationItemsFromRecord(r)){
+  const rule=kinshipRuleForMention(r,x.item);if(!rule)continue;
+  const source=byId(state.people,rule.sourcePersonId),parent=byId(state.people,rule.parentId);
+  if(!source||!parent||source.id===parent.id)continue;
+  const shared=(source.parentIds||[]).filter(id=>(parent.parentIds||[]).includes(id));
+  const existing=(state.relations||[]).find(rel=>rel.derivedRuleKey===`${r.id}:${source.id}:${parent.id}`);
+  out.push({...rule,id:`kin_${r.id}_${source.id}_${parent.id}`,source,parent,shared,existing,
+   score:rule.byAlliance?55:(shared.length?100:((source.parentIds||[]).length||(parent.parentIds||[]).length?88:78))});
+ }
+ return out;
+}
+function acceptKinshipProposal(id){
+ const p=kinshipRelationProposals().find(x=>x.id===id);if(!p)return;
+ state.relations=state.relations||[];
+ const key=`${p.recordId}:${p.source.id}:${p.parent.id}`;
+ if(!state.relations.some(x=>x.derivedRuleKey===key))state.relations.push({id:uid('relation'),type:p.byAlliance?'alliance-aunt-uncle':'sibling-inferred',person1Id:p.source.id,person2Id:p.parent.id,label:p.byAlliance?'Oncle ou tante par alliance':`${p.relation==='frère'?'Frère':'Sœur'} déduit·e`,certainty:p.shared.length?'certain':'probable',recordId:p.recordId,derivedRuleKey:key,notes:p.explanation,createdAt:now()});
+ if(!p.byAlliance){
+  const sourceParents=p.source.parentIds||[],parentParents=p.parent.parentIds||[];
+  if(!sourceParents.length&&parentParents.length)p.source.parentIds=[...parentParents];
+  else if(sourceParents.length&&!parentParents.length)p.parent.parentIds=[...sourceParents];
+  const common=(p.source.parentIds||[]).filter(x=>(p.parent.parentIds||[]).includes(x));
+  if(common.length){
+   for(const fam of state.families||[]){
+    const partners=[fam.partner1Id,fam.partner2Id].filter(Boolean);
+    if(common.every(id=>partners.includes(id))){fam.childIds=[...new Set([...(fam.childIds||[]),p.source.id,p.parent.id])];p.source.familyIds=[...new Set([...(p.source.familyIds||[]),fam.id])];p.parent.familyIds=[...new Set([...(p.parent.familyIds||[]),fam.id])];}
+   }
+  }
+ }
+ logResearchAction('relation','Relation familiale validée',{proposalId:id,recordId:p.recordId});saveState(true);renderMain();toast('Relation familiale enregistrée');
+}
+function familyReconstructionProposals(){
+ const byParents=new Map();
+ for(const r of state.records||[]){
+  if(!['baptisme','naissance','sepulture','deces'].includes(r.type))continue;
+  const f=r.fields||{},father=f.fatherPersonId,mother=f.motherPersonId,child=f.childPersonId||f.deceasedPersonId;
+  if(!father||!mother||!child)continue;
+  const key=[father,mother].sort().join('|');
+  const row=byParents.get(key)||{key,fatherId:father,motherId:mother,childIds:new Set(),recordIds:new Set()};row.childIds.add(child);row.recordIds.add(r.id);byParents.set(key,row);
+ }
+ const proposals=[];
+ for(const row of byParents.values()){
+  const family=(state.families||[]).find(f=>[f.partner1Id,f.partner2Id].filter(Boolean).sort().join('|')===row.key);
+  const missing=[...row.childIds].filter(id=>!family||(family.childIds||[]).includes(id)===false);
+  if(!family&&row.childIds.size<2)continue;
+  if(family&&!missing.length)continue;
+  const father=byId(state.people,row.fatherId),mother=byId(state.people,row.motherId);
+  const score=family?99:Math.min(96,75+row.childIds.size*7);
+  proposals.push({id:`family_${row.key}`,family,father,mother,childIds:[...row.childIds],missing,recordIds:[...row.recordIds],score,
+   evidence:[`${row.childIds.size} enfant(s) portent exactement les mêmes identifiants de père et de mère`,`${row.recordIds.size} acte(s) structurés concordants`,family?'Le couple existe déjà mais certains enfants n’y sont pas rattachés':'Aucune famille de couple correspondante n’existe encore']});
+ }
+ return proposals.sort((a,b)=>b.score-a.score);
+}
+function acceptFamilyProposal(id){
+ const p=familyReconstructionProposals().find(x=>x.id===id);if(!p)return;
+ let fam=p.family;
+ if(!fam){fam={id:uid('family'),partner1Id:p.father.id,partner2Id:p.mother.id,childIds:[],unionType:'famille reconstituée depuis les actes',confidence:'probable',notes:'Famille proposée automatiquement à partir de plusieurs actes ayant les mêmes parents structurés.',createdAt:now(),updatedAt:now()};state.families.push(fam)}
+ fam.childIds=[...new Set([...(fam.childIds||[]),...p.childIds])];fam.updatedAt=now();
+ for(const childId of p.childIds){const child=byId(state.people,childId);if(!child)continue;child.parentIds=[...new Set([...(child.parentIds||[]),p.father.id,p.mother.id])];child.familyIds=[...new Set([...(child.familyIds||[]),fam.id])];}
+ for(const partner of [p.father,p.mother]){partner.spouseIds=[...new Set([...(partner.spouseIds||[]),(partner.id===p.father.id?p.mother.id:p.father.id)])];partner.childIds=[...new Set([...(partner.childIds||[]),...p.childIds])];partner.familyIds=[...new Set([...(partner.familyIds||[]),fam.id])];}
+ logResearchAction('famille','Famille reconstituée ou complétée',{familyId:fam.id,children:p.childIds,records:p.recordIds});saveState(true);renderMain();toast('Famille reconstituée');
+}
+function surnameVariantCandidates(){
+ const names=[...new Set((state.people||[]).map(p=>safe(p.lastName).trim()).filter(Boolean))];
+ const distance=(a,b)=>{a=norm(a);b=norm(b);const m=Array.from({length:a.length+1},(_,i)=>[i]);for(let j=1;j<=b.length;j++)m[0][j]=j;for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++)m[i][j]=Math.min(m[i-1][j]+1,m[i][j-1]+1,m[i-1][j-1]+(a[i-1]===b[j-1]?0:1));return m[a.length][b.length]};
+ const out=[];
+ for(let i=0;i<names.length;i++)for(let j=i+1;j<names.length;j++){
+  const a=names[i],b=names[j],d=distance(a,b);if(d>1||Math.min(a.length,b.length)<4)continue;
+  const pa=state.people.filter(p=>norm(p.lastName)===norm(a)),pb=state.people.filter(p=>norm(p.lastName)===norm(b));
+  const firstA=new Set(pa.map(p=>norm(p.firstNames))),firstB=new Set(pb.map(p=>norm(p.firstNames)));const shared=[...firstA].filter(x=>x&&firstB.has(x));
+  const placesA=new Set(pa.map(p=>norm(p.residence)).filter(Boolean)),placesB=new Set(pb.map(p=>norm(p.residence)).filter(Boolean));const sharedPlaces=[...placesA].filter(x=>placesB.has(x));
+  const score=Math.min(97,45+(shared.length?25:0)+(sharedPlaces.length?15:0)+(d===1?10:0));
+  if(score>=55)out.push({id:`surname_${norm(a)}_${norm(b)}`,a,b,score,shared,sharedPlaces,evidence:[`Distance orthographique : ${d}`,shared.length?`Prénom(s) commun(s) : ${shared.join(', ')}`:'Aucun prénom strictement commun',sharedPlaces.length?`Domicile(s) commun(s) : ${sharedPlaces.join(', ')}`:'Domiciles insuffisamment renseignés']});
+ }
+ return out.sort((a,b)=>b.score-a.score).slice(0,80);
+}
+function renderFamilyProposals(){const rows=familyReconstructionProposals();return `<section><div class="review-intro"><h2>Familles proposées</h2><p class="muted">Les propositions reposent sur des identifiants structurés de parents identiques. Rien n’est appliqué sans validation.</p></div><div class="grid">${rows.map(p=>`<article class="card proposal-card confidence-${p.score>=90?'high':p.score>=75?'medium':'low'}"><div class="split-head"><div><h3>${personNameHTML(p.father)} × ${personNameHTML(p.mother)}</h3><div>${p.childIds.length} enfant(s) retrouvé(s)</div></div><span class="proposal-score">${p.score}%</span></div><ul class="evidence-list">${p.evidence.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><div class="person-chip-list">${p.childIds.map(id=>{const c=byId(state.people,id);return c?`<button class="person-chip" data-action="view-person" data-id="${esc(id)}">${personNameHTML(c)}</button>`:''}).join('')}</div><div class="toolbar"><button class="primary" data-action="accept-family-proposal" data-proposal-id="${esc(p.id)}">${p.family?'Rattacher les enfants manquants':'Créer cette famille'}</button>${p.recordIds[0]?`<button data-action="view-record" data-id="${esc(p.recordIds[0])}">Voir un acte</button>`:''}</div></article>`).join('')||empty()}</div></section>`}
+function renderRelationProposals(){const rows=kinshipRelationProposals();return `<section><div class="review-intro"><h2>Relations proposées</h2><p class="muted">Règle appliquée : un oncle paternel est le frère du père ; un oncle maternel est le frère de la mère. Même logique pour les tantes. Les alliances restent distinguées du sang.</p></div><div class="grid">${rows.map(p=>`<article class="card proposal-card confidence-${p.score>=90?'high':p.score>=75?'medium':'low'}"><div class="split-head"><div><h3>${personNameHTML(p.source)} ↔ ${personNameHTML(p.parent)}</h3><div>${esc(p.explanation)}</div></div><span class="proposal-score">${p.score}%</span></div><div class="kinship-rule">${p.shared.length?'Parents communs déjà identifiés.':p.byAlliance?'Lien d’alliance seulement.':'Fratrie déduite, grands-parents non inventés.'}</div><div class="toolbar">${p.existing?'<span class="badge green">Déjà validée</span>':`<button class="primary" data-action="accept-kinship-proposal" data-proposal-id="${esc(p.id)}">Valider la relation</button>`}<button data-action="view-record" data-id="${esc(p.recordId)}">Voir l’acte</button></div></article>`).join('')||empty()}</div></section>`}
+function renderSurnameReview(){const rows=surnameVariantCandidates();return `<section><h2>Patronymes douteux</h2><div class="notice warn">Ces rapprochements sont des indices, jamais des corrections automatiques.</div><div class="grid two">${rows.map(x=>`<article class="card proposal-card"><div class="split-head"><h3>${esc(x.a)} ↔ ${esc(x.b)}</h3><strong>${x.score}%</strong></div><ul class="evidence-list">${x.evidence.map(e=>`<li>${esc(e)}</li>`).join('')}</ul><div class="toolbar"><button data-action="view-surname" data-surname-key="${esc(norm(x.a))}">Voir ${esc(x.a)}</button><button data-action="view-surname" data-surname-key="${esc(norm(x.b))}">Voir ${esc(x.b)}</button></div></article>`).join('')||empty()}</div></section>`}
+function renderHomonymReview(){const all=buildAnomalyRegistry().filter(a=>['homonyms','different-parents'].includes(a.type)&&!isReviewDeferred(a.id));return `<section><h2>Homonymes</h2><div class="notice">Seuls les rapprochements soutenus par plusieurs indices sont affichés.</div>${renderReviewItems(all,'identity')}</section>`}
+function renderWaitingReview(){const deferred=new Set(reviewDeferredIds()),all=buildAnomalyRegistry().filter(a=>deferred.has(a.id));return `<section><h2>En attente</h2>${renderReviewItems(all,'waiting')}</section>`}
+function renderReviewHub(){const view=currentSectionView('review');const fn={inconsistencies:renderAnomalyRegistry,homonyms:renderHomonymReview,surnames:renderSurnameReview,'family-proposals':renderFamilyProposals,'relation-proposals':renderRelationProposals,waiting:renderWaitingReview}[view]||renderAnomalyRegistry;return `${renderSectionTabs('review')}${fn()}`}
+function roleSex(role='',fallback=''){
+ const r=norm(role);
+ if(/^(pere|epoux|parrain|fils|frere|oncle|veuf|homme)$/.test(r))return'M';
+ if(/^(mere|epouse|marraine|fille|soeur|tante|veuve|femme)$/.test(r))return'F';
+ return fallback||'';
+}
+function collectOccupationMentions(){
+ const rows=[];
+ for(const p of state.people||[]){
+  if(p.mainOccupation)rows.push({occupation:p.mainOccupation,personId:p.id,sex:p.sex||'',signature:p.signature,role:'Fiche individuelle'});
+  for(const x of safe(p.otherOccupations).split(/[;,]/).map(x=>x.trim()).filter(Boolean))rows.push({occupation:x,personId:p.id,sex:p.sex||'',signature:p.signature,role:'Fiche individuelle'});
+ }
+ for(const r of state.records||[]){
+  const f=r.fields||{};
+  const structured=[
+   ['fatherOccupation','Père','fatherPersonId','M'],
+   ['motherOccupation','Mère','motherPersonId','F'],
+   ['husbandOccupation','Époux','husbandPersonId','M'],
+   ['wifeOccupation','Épouse','wifePersonId','F'],
+   ['occupation','Défunt','deceasedPersonId',f.sex||'']
+  ];
+  for(const [key,role,idKey,sex] of structured)if(f[key])rows.push({occupation:f[key],recordId:r.id,personId:f[idKey]||'',role,sex,signature:''});
+  for(const x of relationItemsFromRecord(r))if(x.item.occupation){
+   const role=x.item.role||x.group||'';
+   const person=byId(state.people,x.item.personId);
+   rows.push({occupation:x.item.occupation,recordId:r.id,personId:x.item.personId,role,sex:person?.sex||roleSex(role),signature:x.item.signed});
+  }
+ }
+ return rows;
+}
+function occupationStatisticsGroups(){
+ const rows=collectOccupationMentions(),groups=new Map();
+ for(const x of rows){
+  const k=norm(x.occupation);if(!k)continue;
+  const g=groups.get(k)||{label:x.occupation,mentions:0,personIds:new Set(),menIds:new Set(),womenIds:new Set(),unknownSexIds:new Set(),unlinkedMentions:0,signed:0,signatureKnown:0,roles:new Map()};
+  g.mentions++;
+  if(x.personId){
+   g.personIds.add(x.personId);
+   const sex=x.sex||byId(state.people,x.personId)?.sex||'';
+   if(sex==='M'){g.menIds.add(x.personId);g.unknownSexIds.delete(x.personId)}
+   else if(sex==='F'){g.womenIds.add(x.personId);g.unknownSexIds.delete(x.personId)}
+   else if(!g.menIds.has(x.personId)&&!g.womenIds.has(x.personId))g.unknownSexIds.add(x.personId);
+  }else g.unlinkedMentions++;
+  if(x.signature==='oui')g.signed++;
+  if(['oui','non'].includes(x.signature))g.signatureKnown++;
+  g.roles.set(x.role,(g.roles.get(x.role)||0)+1);
+  groups.set(k,g);
+ }
+ return{rows,list:[...groups.values()].sort((a,b)=>b.mentions-a.mentions)};
+}
+function renderProfessionStatistics(){
+ const {rows,list}=occupationStatisticsGroups();
+ const distinctPeople=new Set(rows.map(x=>x.personId).filter(Boolean)).size;
+ return `<section><h2>Statistiques — Professions</h2>
+  <div class="notice">Les cartes distinguent désormais les <strong>personnes uniques</strong> des <strong>mentions dans les actes</strong>. Une même personne peut être mentionnée plusieurs fois avec la même profession. Le sexe est lu dans la fiche ou déduit d’un rôle non ambigu dans l’acte (père, mère, époux, épouse, parrain, marraine).</div>
+  <div class="stat-matrix">
+   <div class="stat-tile"><span>Mentions professionnelles</span><strong>${rows.length}</strong></div>
+   <div class="stat-tile"><span>Personnes reliées à une profession</span><strong>${distinctPeople}</strong></div>
+   <div class="stat-tile"><span>Professions distinctes</span><strong>${list.length}</strong></div>
+   <div class="stat-tile"><span>Profession la plus mentionnée</span><strong>${esc(list[0]?.label||'—')}</strong></div>
+  </div>
+  <div class="grid two" style="margin-top:12px">${list.map(x=>`<button class="card profession-button" data-action="view-profession" data-name="${esc(x.label)}">
+   <span><strong>${esc(x.label)}</strong>
+    <small class="muted">${x.personIds.size} personne(s) unique(s) · ${x.menIds.size} homme(s) · ${x.womenIds.size} femme(s)${x.unknownSexIds.size?` · ${x.unknownSexIds.size} sexe non renseigné`:''}</small>
+   </span>
+   <span><strong>${x.mentions}</strong><small class="muted">mention(s)</small></span>
+  </button>`).join('')||empty()}</div>
+ </section>`;
+}
+function signatureMentions(){const out=[];for(const p of state.people||[])if(['oui','non'].includes(p.signature))out.push({personId:p.id,name:personName(p),sex:p.sex,signed:p.signature,occupation:p.mainOccupation||'',source:'fiche'});for(const r of state.records||[]){const f=r.fields||{};for(const [name,id,signed,role,occ] of [[f.husband,f.husbandPersonId,f.husbandSigned,'Époux',f.husbandOccupation],[f.wife,f.wifePersonId,f.wifeSigned,'Épouse',f.wifeOccupation],[f.father,f.fatherPersonId,f.fatherSigned,'Père',f.fatherOccupation],[f.mother,f.motherPersonId,f.motherSigned,'Mère',f.motherOccupation]])if(name&&['oui','non'].includes(signed))out.push({personId:id,name,sex:role==='Épouse'||role==='Mère'?'F':'M',signed,occupation:occ||'',recordId:r.id,role});for(const x of relationItemsFromRecord(r))if(['oui','non'].includes(x.item.signed))out.push({personId:x.item.personId,name:x.item.name,sex:byId(state.people,x.item.personId)?.sex||'',signed:x.item.signed,occupation:x.item.occupation||'',recordId:r.id,role:x.item.role||x.group})}return out}
+function statisticBars(data=[]){
+ const rows=(Array.isArray(data)?data:[])
+  .map(row=>Array.isArray(row)?[safe(row[0]),Number(row[1])||0]:[safe(row?.label),Number(row?.value)||0])
+  .filter(([label])=>label);
+ if(!rows.length)return empty();
+ const max=Math.max(1,...rows.map(([,value])=>value));
+ return `<div class="panel">${rows.map(([label,value])=>`<div class="bar-row"><span>${esc(label)}</span><div class="bar"><span style="width:${Math.round(value/max*100)}%"></span></div><strong>${esc(value)}</strong></div>`).join('')}</div>`;
+}
+function renderSignatureStatistics(){const rows=signatureMentions(),group=sex=>rows.filter(x=>!sex||x.sex===sex),tile=(label,a)=>{const yes=a.filter(x=>x.signed==='oui').length;return `<div class="stat-tile"><span>${label}</span><strong>${percentage(yes,a.length)}</strong><small>${yes} signatures sur ${a.length} mentions</small></div>`};const byJob=freq(rows.filter(x=>x.occupation&&x.signed==='oui').map(x=>x.occupation)).slice(0,15);return `<section><h2>Statistiques — Signatures</h2><div class="stat-matrix">${tile('Ensemble',group(''))}${tile('Hommes',group('M'))}${tile('Femmes',group('F'))}<div class="stat-tile"><span>Mentions exploitables</span><strong>${rows.length}</strong></div></div><h3>Professions des signataires</h3>${statisticBars(byJob)}</section>`}
+function clergyRows(){const map=new Map();for(const r of state.records||[]){if(r.type==='libre')continue;const name=safe(r.fields?.priest).trim()||'Non renseigné';const g=map.get(name)||{name,count:0,types:new Map(),months:new Map(),transcribed:0,totalChars:0,professionMentioned:0,residenceMentioned:0};g.count++;g.types.set(r.type,(g.types.get(r.type)||0)+1);const y=safe(r.date).slice(0,4),m=safe(r.date).slice(5,7);if(y&&m)g.months.set(`${y}-${m}`,(g.months.get(`${y}-${m}`)||0)+1);if(r.transcription){g.transcribed++;g.totalChars+=r.transcription.length}const text=JSON.stringify(r.fields||{});if(/Occupation|occupation|Profession|profession/.test(text))g.professionMentioned++;if(/Home|home|Residence|residence/.test(text))g.residenceMentioned++;map.set(name,g)}return [...map.values()].sort((a,b)=>b.count-a.count)}
+function renderClergyStatistics(){const rows=clergyRows(),years=[...new Set(state.records.map(r=>safe(r.date).slice(0,4)).filter(Boolean))].sort();return `<section><h2>Statistiques — Clergé</h2><div class="grid two">${rows.map(x=>{const absent=[];for(const y of years)for(let m=1;m<=12;m++){const key=`${y}-${String(m).padStart(2,'0')}`;const corpusHas=state.records.some(r=>safe(r.date).startsWith(key)&&r.type!=='libre');if(corpusHas&&!x.months.has(key))absent.push(`${monthName(m-1)} ${y}`)}return `<button class="card clergy-button" data-action="view-clergy" data-name="${esc(x.name)}"><span><strong>${esc(x.name)}</strong><small>${[...x.types].map(([t,n])=>`${TYPE_LABELS[t]||t} : ${n}`).join(' · ')}</small></span><span>${x.count}</span><div class="small muted">Mois sans acte dans le corpus : ${esc(absent.slice(0,8).join(', ')||'aucun')}${absent.length>8?'…':''}</div></button>`}).join('')||empty()}</div></section>`}
+function repeatedGodparentPairs(){const map=new Map();for(const r of state.records.filter(r=>r.type==='baptisme')){const ids=(r.fields?.godparents||[]).map(x=>x.personId).filter(Boolean);if(ids.length<2)continue;const key=ids.sort().join('|'),row=map.get(key)||{ids,count:0,records:[]};row.count++;row.records.push(r.id);map.set(key,row)}return [...map.values()].filter(x=>x.count>1).sort((a,b)=>b.count-a.count)}
+function renderNetworkStatistics(){const pairs=repeatedGodparentPairs(),edges=socialNetworkEdges(),relations=kinshipRelationProposals();return `<section><h2>Statistiques — Réseaux</h2>${renderNetworkAnalysis()}<div class="stat-matrix"><div class="stat-tile"><span>Relations de parenté déductibles</span><strong>${relations.length}</strong></div><div class="stat-tile"><span>Duos parrain-marraine récurrents</span><strong>${pairs.length}</strong></div><div class="stat-tile"><span>Paires sociales reliées</span><strong>${edges.length}</strong></div></div><h3>Duos de parrainage récurrents</h3><div class="grid two">${pairs.map(x=>`<div class="card"><strong>${x.ids.map(id=>personName(byId(state.people,id))).join(' × ')}</strong><div>${x.count} baptêmes</div></div>`).join('')||empty()}</div><h3>Journal de recherche récent</h3>${(state.researchJournal||[]).slice(-20).reverse().map(x=>`<div class="journal-entry"><strong>${esc(x.label)}</strong><div class="small muted">${esc(new Date(x.date).toLocaleString('fr-FR'))} · ${esc(x.kind)}</div></div>`).join('')||empty()}</section>`}
+function openProfessionDetail(name){
+ const rows=collectOccupationMentions().filter(x=>norm(x.occupation)===norm(name));
+ const personIds=new Set(rows.map(x=>x.personId).filter(Boolean));
+ const men=new Set(),women=new Set(),unknown=new Set();
+ for(const id of personIds){const linked=rows.filter(x=>x.personId===id);const sex=byId(state.people,id)?.sex||linked.find(x=>x.sex==='M'||x.sex==='F')?.sex||'';if(sex==='M')men.add(id);else if(sex==='F')women.add(id);else unknown.add(id)}
+ const unlinked=rows.filter(x=>!x.personId).length;
+ openModal(`Profession — ${name}`,`
+  <div class="notice">Une personne n’est comptée qu’une fois, même si sa profession apparaît dans plusieurs actes.</div>
+  <div class="grid cards">
+   <div class="card"><strong>${personIds.size}</strong><div>personne(s) unique(s)</div></div>
+   <div class="card"><strong>${men.size}</strong><div>homme(s)</div></div>
+   <div class="card"><strong>${women.size}</strong><div>femme(s)</div></div>
+   ${unknown.size?`<div class="card"><strong>${unknown.size}</strong><div>sexe non renseigné</div></div>`:''}
+   <div class="card"><strong>${rows.length}</strong><div>mention(s) au total</div></div>
+   ${unlinked?`<div class="card"><strong>${unlinked}</strong><div>mention(s) non reliée(s) à une fiche</div></div>`:''}
+  </div>
+  <div>${rows.slice(0,100).map(x=>`<div class="mention-row"><div><strong>${esc(x.role)}</strong> — ${x.personId?esc(personName(byId(state.people,x.personId))):'Personne non reliée'}</div>${x.recordId?`<button data-action="view-record" data-id="${esc(x.recordId)}">Acte</button>`:''}</div>`).join('')||empty()}</div>`)
+}
+function openClergyDetail(name){const row=clergyRows().find(x=>x.name===name);if(!row)return;openModal(`Célébrant — ${name}`,`<div class="stat-matrix"><div class="stat-tile"><span>Actes</span><strong>${row.count}</strong></div><div class="stat-tile"><span>Transcriptions disponibles</span><strong>${row.transcribed}</strong></div><div class="stat-tile"><span>Longueur moyenne transcrite</span><strong>${row.transcribed?Math.round(row.totalChars/row.transcribed):'—'}</strong></div><div class="stat-tile"><span>Professions renseignées</span><strong>${percentage(row.professionMentioned,row.count)}</strong></div></div><h3>Répartition par type</h3>${statisticBars([...row.types].map(([t,n])=>[TYPE_LABELS[t]||t,n]))}`)}
+
 function renderAnomalyRegistry(){
  const all=buildAnomalyRegistry();
  const deferred=new Set(reviewDeferredIds());
@@ -3117,7 +3463,7 @@ function renderAnomalyRegistry(){
 
 function renderMain(){
  const main=document.getElementById('main');
- const fn={dashboard:renderDashboard,registers:renderRegistersHub,people:renderPeople,families:renderFamilies,research:renderResearchHub,demography:renderDemographyHub,review:renderAnomalyRegistry,settings:renderSettings}[currentTab];
+ const fn={dashboard:renderDashboard,registers:renderRegistersHub,people:renderPeople,families:renderFamilies,research:renderResearchHub,demography:renderDemographyHub,review:renderReviewHub,settings:renderSettings}[currentTab];
  try{main.innerHTML=fn?fn():'<div class="panel">Vue inconnue</div>'}catch(e){console.error(e);main.innerHTML=`<div class="notice danger">Une erreur d’affichage est survenue. ${esc(e.message)}</div>`}
  requestAnimationFrame(()=>postRender(currentTab));
 }
@@ -4465,6 +4811,7 @@ function renderHomonymWarning(row){
  });
 }
 function initHomonymWarnings(scope=document){
+ initFirstNameSexDetectors(scope);
  scope.querySelectorAll('.person-repeatable-item').forEach(row=>{
   const input=row.querySelector('[data-person-field="name"]');
   const personId=row.querySelector('[data-person-field="personId"]');
@@ -4688,6 +5035,7 @@ function synchronizeMarriageWitnessKinship(r,husband,wife,husbandBirthFamily,wif
    personId:w.personId||'',
    forceNewPerson:w.forceNewPerson===true||w.forceNewPerson==='oui',
    occupation:w.occupation,
+   sex:w.sex||inferSexFromFirstName(w.name,{minimumEvidence:1}).sex,
    residence:effectiveResidence(w.home),
    sourceRecordId:r.id,
    date:r.date
@@ -5658,6 +6006,7 @@ function socialNetworkEdges(){
   for(const spouse of couple)for(const x of f.witnessesDetailed||[])add(spouse,x.personId,'Témoin de mariage',r.id);
   if(f.deceasedPersonId)for(const x of f.burialWitnesses||[])add(f.deceasedPersonId,x.personId,'Témoin de sépulture',r.id);
  }
+ for(const rel of state.relations||[]){if(!rel.person1Id||!rel.person2Id)continue;if(['sibling-inferred','alliance-aunt-uncle'].includes(rel.type))add(rel.person1Id,rel.person2Id,rel.label||'Parenté déduite',rel.recordId||'');}
  return [...edges.values()];
 }
 function networkCentralityRows(){
@@ -5821,13 +6170,13 @@ function viewPerson(id){
 
 function renderSurnames(){
  const groups=new Map();
- for(const p of state.people){
-  const parsed=splitPersonName(p.lastName,p.firstNames);
+ for(const person of state.people||[]){
+  const parsed=splitPersonName(person.lastName,person.firstNames);
   const surname=safe(parsed.lastName).trim();
   if(!surname)continue;
   const key=norm(surname);
   const item=groups.get(key)||{label:surname,people:[]};
-  item.people.push(p);
+  item.people.push(person);
   groups.set(key,item);
  }
  const list=[...groups.values()].sort((a,b)=>a.label.localeCompare(b.label,'fr'));
@@ -5837,20 +6186,6 @@ function renderSurnames(){
   <div id="surnameList" class="grid two">
    ${list.length?list.map(item=>surnameCard(item)).join(''):empty()}
   </div>
- 
- <h3 class="section-title">Identité</h3>
- ${personDistinctFrom(p.id).length?`
-  <div class="notice">
-   <strong>Cette fiche est confirmée distincte de :</strong>
-   <div class="toolbar">${personDistinctFrom(p.id).map(id=>{
-    const other=byId(state.people,id);
-    return other?`<button data-action="view-person" data-id="${esc(id)}">${personNameHTML(other)}</button>`:'';
-   }).join('')}</div>
-  </div>`:''}
-
- ${renderKeyRelations(p.id)}
- <h3 class="section-title">Chronologie individuelle</h3>
- ${renderPersonTimeline(p.id)}
  </section>`;
 }
 function surnameCard(item){
@@ -5928,7 +6263,7 @@ function familyMiniTree(f){
 }
 function renderFamilies(){
  const families=[...state.families].sort((a,b)=>familySurnameHeading(a).localeCompare(familySurnameHeading(b),'fr'));
- return `<section class="panel"><div class="split-head"><div><h2>Familles</h2><div class="muted">${families.length} famille(s)</div></div><button class="primary" data-action="new-family">Ajouter une famille</button></div>
+ return `<section class="panel"><div class="split-head"><div><h2>Familles</h2><div class="muted">${families.length} famille(s) · ${familyReconstructionProposals().length} proposition(s)</div></div><div class="toolbar"><button data-tab="review" data-action="open-family-proposals">Propositions automatiques</button><button class="primary" data-action="new-family">Ajouter une famille</button></div></div>
  <div class="family-accordions">${families.map(f=>`
   <details class="family-accordion">
    <summary>
@@ -6176,9 +6511,9 @@ function viewPlace(id){
 }
 
 function renderPlaces(){
- return `<section class="panel"><div class="split-head"><div><h2>Lieux</h2><div class="muted">${state.places.length} fiche(s) de lieu</div></div><button class="primary" data-action="new-place">Ajouter un lieu</button></div>
+ return `<section class="panel"><div class="split-head"><div><h2>Lieux</h2><div class="muted">${(state.places||[]).length} fiche(s) de lieu</div></div><button class="primary" data-action="new-place">Ajouter un lieu</button></div>
  <div class="notice">Bourg est le domicile local par défaut et regroupe les anciennes valeurs « Saint-Just », « Saint-Just-la-Pendue » et « Bourg de Saint-Just » dans les statistiques. Les lieux-dits de Saint-Just-la-Pendue sont distingués des communes et villages alentour. Tout nouveau lieu saisi dans un acte est ajouté automatiquement ici.</div>
- <div class="grid two">${state.places.map(p=>{
+ <div class="grid two">${(state.places||[]).map(p=>{
   const acts=recordsForPlace(p),people=peopleForPlace(p);
   return `<div class="card"><strong>${esc(p.name)}</strong><div class="small muted">${esc(p.type||'')} · ${esc(p.commune||'')}</div>
   <div>${acts.length} acte(s) lié(s) · ${people.length} personne(s) liée(s)</div>
@@ -6409,9 +6744,9 @@ function drawNetwork(){
  if(host) host.innerHTML = drawGenealogyTree(pid);
 }
 function renderResearch(){
- return `<section class="panel"><div class="split-head"><div><h2>Recherches</h2><div class="muted">${state.research.length} recherche(s)</div></div><button class="primary" data-action="new-research">Ajouter une recherche</button></div>
+ return `<section class="panel"><div class="split-head"><div><h2>Recherches</h2><div class="muted">${(state.research||[]).length} recherche(s)</div></div><button class="primary" data-action="new-research">Ajouter une recherche</button></div>
  <div class="form-grid" id="researchFilters">${field('priority','Priorité','',{type:'select',options:['','basse','normale','haute','urgente']})}${field('status','Statut','',{type:'select',options:['','à faire','en cours','bloquée','terminée','abandonnée']})}${field('q','Recherche','','half')}</div>
- <div id="researchList">${state.research.map(researchCard).join('')||empty()}</div></section>`;
+ <div id="researchList">${(state.research||[]).map(researchCard).join('')||empty()}</div></section>`;
 }
 function researchCard(r){return `<div class="card" style="margin:8px 0"><div class="split-head"><strong>${esc(r.subject||'Recherche')}</strong><span class="badge ${r.priority==='urgente'?'danger':r.priority==='haute'?'warn':'green'}">${esc(r.priority||'normale')}</span></div><div class="small muted">${esc(r.status||'à faire')} · ${esc(r.communes||'')} · ${esc(r.period||'')}</div><div>${esc(r.hypothesis||'')}</div><div class="toolbar"><button data-action="edit-research" data-id="${esc(r.id)}">Modifier</button><button class="danger" data-action="delete-research" data-id="${esc(r.id)}">Supprimer</button></div></div>`}
 function openResearchForm(r={}){
@@ -7034,7 +7369,7 @@ function renderDemography(){
  return `<section>
   <div class="split-head">
    <div>
-    <h2>Démographie historique</h2>
+    <h2>Statistiques — Démographie</h2>
     <p class="muted">Analyse des actes actuellement dépouillés, avec distinction entre certitude documentaire et couverture réelle du corpus.</p>
    </div>
    <button data-action="export-demography">Exporter les tableaux CSV</button>
@@ -7303,6 +7638,11 @@ document.addEventListener('click',async e=>{
  const a=e.target.closest('[data-action]');if(!a)return;
  const id=a.dataset.id,action=a.dataset.action;
   if(action==='section-view'){setSectionView(a.dataset.section,a.dataset.view);return;}
+  if(action==='accept-family-proposal'){acceptFamilyProposal(a.dataset.proposalId);return;}
+  if(action==='accept-kinship-proposal'){acceptKinshipProposal(a.dataset.proposalId);return;}
+  if(action==='open-family-proposals'){currentTab='review';state.settings.sectionViews=state.settings.sectionViews||{};state.settings.sectionViews.review='family-proposals';saveState(true,false);renderNav();renderMain();return;}
+  if(action==='view-profession'){openProfessionDetail(a.dataset.name);return;}
+  if(action==='view-clergy'){openClergyDetail(a.dataset.name);return;}
   if(action==='refresh-anomalies'){renderMain();toast('Registre de contrôle recalculé');return;}
   if(action==='export-demography'){exportDemographyTables();return;}
   if(action==='reset-demography-filters'){
@@ -7880,6 +8220,36 @@ function cleanupDuplicateAlliancePlaceholders(){
  return changed;
 }
 
+
+function migrateSexesFromLearnedFirstNames(){
+ let changed=false;
+ const dictionary=learnedFirstNameSexDictionary();
+ const infer=(name,min=2)=>{
+  const first=firstWordGivenName(name),row=dictionary.get(first);
+  if(!row)return'';
+  const male=row.M||0,female=row.F||0,total=male+female;
+  if(total<min||male&&female)return'';
+  return male?'M':female?'F':'';
+ };
+ for(const p of state.people||[]){
+  if(p.sex)continue;
+  const sex=infer(personName(p),2);
+  if(sex){p.sex=sex;p.sexInference={method:'first-name-register-learning',firstName:firstWordGivenName(personName(p)),updatedAt:now()};changed=true}
+ }
+ for(const r of state.records||[]){
+  const f=r.fields||{};
+  for(const key of ['godparents','burialWitnesses','deathDeclarants','witnessesDetailed']){
+   for(const item of f[key]||[]){
+    if(item.sex)continue;
+    const roleSexValue=roleSex(item.role||item.relationStructured?.base||item.familyLink||'');
+    const sex=roleSexValue||infer(item.name,2);
+    if(sex){item.sex=sex;item.sexInference={method:roleSexValue?'role':'first-name-register-learning',firstName:firstWordGivenName(item.name),updatedAt:now()};changed=true}
+   }
+  }
+ }
+ return changed;
+}
+
 function migrateFamilyLinks(){
  let changed=false;
  if(!Array.isArray(state.settings?.familyLinkOptions)){
@@ -8163,6 +8533,7 @@ function rebuildEntitiesFromExistingRecords(){
  ensureMentionIds();
  normalizeIdentityGraph();
  migrateFamilyLinks();
+ migrateSexesFromLearnedFirstNames();
  normalizeRecordOccupations();
  consolidateFamiliesByExactParents();
  archiveUnreferencedPeople();
