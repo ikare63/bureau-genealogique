@@ -1603,7 +1603,7 @@ header.suite-header > .sister-nav{
 (() => {
 'use strict';
 
-const APP_VERSION='3.5.5';
+const APP_VERSION='3.5.6';
 const LS_KEY='scriptoria-data';
 const BACKUP_KEY='scriptoria-backup';
 const DB_NAME='scriptoria-files';
@@ -3328,7 +3328,7 @@ function occupationStatisticsGroups(){
   g.roles.set(x.role,(g.roles.get(x.role)||0)+1);
   groups.set(k,g);
  }
- return{rows,list:[...groups.values()].sort((a,b)=>b.mentions-a.mentions)};
+ return{rows,list:[...groups.values()].sort((a,b)=>b.personIds.size-a.personIds.size||b.mentions-a.mentions||a.label.localeCompare(b.label,'fr'))};
 }
 function renderProfessionStatistics(){
  const {rows,list}=occupationStatisticsGroups();
@@ -3339,13 +3339,13 @@ function renderProfessionStatistics(){
    <div class="stat-tile"><span>Mentions professionnelles</span><strong>${rows.length}</strong></div>
    <div class="stat-tile"><span>Personnes reliées à une profession</span><strong>${distinctPeople}</strong></div>
    <div class="stat-tile"><span>Professions distinctes</span><strong>${list.length}</strong></div>
-   <div class="stat-tile"><span>Profession la plus mentionnée</span><strong>${esc(list[0]?.label||'—')}</strong></div>
+   <div class="stat-tile"><span>Profession la plus répandue</span><strong>${esc(list[0]?.label||'—')}</strong></div>
   </div>
   <div class="grid two" style="margin-top:12px">${list.map(x=>`<button class="card profession-button" data-action="view-profession" data-name="${esc(x.label)}">
    <span><strong>${esc(x.label)}</strong>
-    <small class="muted">${x.personIds.size} personne(s) unique(s) · ${x.menIds.size} homme(s) · ${x.womenIds.size} femme(s)${x.unknownSexIds.size?` · ${x.unknownSexIds.size} sexe non renseigné`:''}</small>
+    <small class="muted">${x.menIds.size} homme(s) · ${x.womenIds.size} femme(s)${x.unknownSexIds.size?` · ${x.unknownSexIds.size} sexe non renseigné`:''}</small>
    </span>
-   <span><strong>${x.mentions}</strong><small class="muted">mention(s)</small></span>
+   <span><strong>${x.personIds.size}</strong><small class="muted">personne(s) unique(s)</small><small class="muted">${x.mentions} mention(s)</small></span>
   </button>`).join('')||empty()}</div>
  </section>`;
 }
