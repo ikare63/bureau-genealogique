@@ -1603,7 +1603,7 @@ header.suite-header > .sister-nav{
 (() => {
 'use strict';
 
-const APP_VERSION='3.5.6';
+const APP_VERSION='3.5.7';
 const LS_KEY='scriptoria-data';
 const BACKUP_KEY='scriptoria-backup';
 const DB_NAME='scriptoria-files';
@@ -8326,6 +8326,38 @@ function cleanupExactTechnicalClones(){
 }
 
 
+
+function isSchoolmasterOccupation(value=''){
+ const cleaned=norm(value).replace(/[’']/g,' ').replace(/\s+/g,' ').trim();
+ return cleaned==='maitre d ecole'||cleaned==='d ecole'||cleaned==='maitre ecole';
+}
+function splitProfessionalRankAndOccupation(value=''){
+ const raw=safe(value).trim();
+ if(!raw)return{occupation:'',rank:''};
+ if(isSchoolmasterOccupation(raw))return{occupation:'Maître d’école',rank:''};
+ const match=raw.match(/^ma[iî]tre\s+(.+)$/i);
+ if(match){
+  const trade=match[1].trim();
+  if(isSchoolmasterOccupation(trade))return{occupation:'Maître d’école',rank:''};
+  return{occupation:trade.charAt(0).toUpperCase()+trade.slice(1),rank:'Maître'};
+ }
+ if(norm(raw)==='maitre')return{occupation:'',rank:'Maître'};
+ return{occupation:raw,rank:''};
+}
+function normalizePeopleOccupations(){
+ let changed=false;
+ for(const p of state.people||[]){
+  const parsed=splitProfessionalRankAndOccupation(p.mainOccupation||'');
+  if(parsed.occupation!==safe(p.mainOccupation)){
+   if(parsed.occupation)p.mainOccupation=parsed.occupation;
+   else delete p.mainOccupation;
+   changed=true;
+  }
+  if(parsed.rank&&p.occupationRank!==parsed.rank){p.occupationRank=parsed.rank;changed=true}
+  if(parsed.occupation==='Maître d’école'&&p.occupationRank){delete p.occupationRank;changed=true}
+ }
+ return changed;
+}
 function normalizeOccupationEntry(item){
  if(!item||typeof item!=='object')return false;
  let changed=false;
@@ -8336,22 +8368,14 @@ function normalizeOccupationEntry(item){
   delete item.occupation;changed=true;
  }
  const current=safe(item.occupation).trim();
- const master=current.match(/^ma[iî]tre\s+(.+)$/i);
- if(master){
-  const trade=master[1].trim();
-  if(norm(trade)==='d ecole'){
-   item.occupation='Maître d’école';
-   delete item.occupationRank;
-  }else{
-   item.occupation=trade.charAt(0).toUpperCase()+trade.slice(1);
-   item.occupationRank='Maître';
-  }
+ const parsed=splitProfessionalRankAndOccupation(current);
+ if(parsed.occupation!==current){
+  if(parsed.occupation)item.occupation=parsed.occupation;
+  else delete item.occupation;
   changed=true;
- }else if(norm(current)==='maitre'){
-  delete item.occupation;item.occupationRank='Maître';changed=true;
- }else if(norm(current)==='d ecole'){
-  item.occupation='Maître d’école';delete item.occupationRank;changed=true;
  }
+ if(parsed.rank&&item.occupationRank!==parsed.rank){item.occupationRank=parsed.rank;changed=true}
+ if(parsed.occupation==='Maître d’école'&&item.occupationRank){delete item.occupationRank;changed=true}
  if(item.relationStructured&&norm(item.relationStructured.base)==='maitre'){
   item.relationStructured.base='Sans lien précisé';changed=true;
  }
@@ -8378,16 +8402,14 @@ function normalizeRecordOccupations(){
     if(!f[qualityKey])f[qualityKey]=raw;
     delete f[key];changed=true;continue;
    }
-   const master=raw.match(/^ma[iî]tre\s+(.+)$/i);
-   if(master){
-    const trade=master[1].trim();
-    if(norm(trade)==='d ecole')f[key]='Maître d’école';
-    else{
-     f[key]=trade.charAt(0).toUpperCase()+trade.slice(1);
-     f[`${key}Rank`]='Maître';
-    }
+   const parsed=splitProfessionalRankAndOccupation(raw);
+   if(parsed.occupation!==raw){
+    if(parsed.occupation)f[key]=parsed.occupation;
+    else delete f[key];
     changed=true;
    }
+   if(parsed.rank&&f[`${key}Rank`]!==parsed.rank){f[`${key}Rank`]=parsed.rank;changed=true}
+   if(parsed.occupation==='Maître d’école'&&f[`${key}Rank`]){delete f[`${key}Rank`];changed=true}
   }
   for(const list of ['godparents','burialWitnesses','deathDeclarants','witnessesDetailed']){
    for(const item of f[list]||[])if(normalizeOccupationEntry(item))changed=true;
@@ -8534,6 +8556,7 @@ function rebuildEntitiesFromExistingRecords(){
  normalizeIdentityGraph();
  migrateFamilyLinks();
  migrateSexesFromLearnedFirstNames();
+ normalizePeopleOccupations();
  normalizeRecordOccupations();
  consolidateFamiliesByExactParents();
  archiveUnreferencedPeople();
