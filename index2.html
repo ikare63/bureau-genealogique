@@ -1547,6 +1547,12 @@ header.suite-header > .sister-nav{
 @media(max-width:560px){.profession-button{align-items:flex-start}.profession-button>span:last-child{min-width:64px}}
 
 
+/* Scriptoria 3.5.8 — statistiques de signatures par personnes uniques */
+@media(max-width:620px){
+  #main .bar-row{grid-template-columns:minmax(105px,1fr) 2fr auto}
+  #main .bar-row strong{font-size:.85rem;white-space:nowrap}
+}
+
 /* Scriptoria 3.5.5 — détecteur de sexe d'après les prénoms du registre */
 .first-name-sex-hint{
  display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;
@@ -1603,7 +1609,7 @@ header.suite-header > .sister-nav{
 (() => {
 'use strict';
 
-const APP_VERSION='3.5.7';
+const APP_VERSION='3.5.8';
 const LS_KEY='scriptoria-data';
 const BACKUP_KEY='scriptoria-backup';
 const DB_NAME='scriptoria-files';
@@ -3358,7 +3364,42 @@ function statisticBars(data=[]){
  const max=Math.max(1,...rows.map(([,value])=>value));
  return `<div class="panel">${rows.map(([label,value])=>`<div class="bar-row"><span>${esc(label)}</span><div class="bar"><span style="width:${Math.round(value/max*100)}%"></span></div><strong>${esc(value)}</strong></div>`).join('')}</div>`;
 }
-function renderSignatureStatistics(){const rows=signatureMentions(),group=sex=>rows.filter(x=>!sex||x.sex===sex),tile=(label,a)=>{const yes=a.filter(x=>x.signed==='oui').length;return `<div class="stat-tile"><span>${label}</span><strong>${percentage(yes,a.length)}</strong><small>${yes} signatures sur ${a.length} mentions</small></div>`};const byJob=freq(rows.filter(x=>x.occupation&&x.signed==='oui').map(x=>x.occupation)).slice(0,15);return `<section><h2>Statistiques — Signatures</h2><div class="stat-matrix">${tile('Ensemble',group(''))}${tile('Hommes',group('M'))}${tile('Femmes',group('F'))}<div class="stat-tile"><span>Mentions exploitables</span><strong>${rows.length}</strong></div></div><h3>Professions des signataires</h3>${statisticBars(byJob)}</section>`}
+function renderSignatureStatistics(){
+ const rows=signatureMentions(),group=sex=>rows.filter(x=>!sex||x.sex===sex);
+ const tile=(label,a)=>{const yes=a.filter(x=>x.signed==='oui').length;return `<div class="stat-tile"><span>${label}</span><strong>${percentage(yes,a.length)}</strong><small>${yes} signatures sur ${a.length} mentions</small></div>`};
+
+ const signedPersonIds=new Set(rows.filter(x=>x.personId&&x.signed==='oui').map(x=>x.personId));
+ const professionGroups=occupationStatisticsGroups().list
+  .map(g=>{
+   const total=g.personIds.size;
+   const signed=[...g.personIds].filter(id=>signedPersonIds.has(id)).length;
+   return {label:g.label,total,signed,rate:total?signed/total*100:0};
+  })
+  .filter(x=>x.total)
+  .sort((a,b)=>b.signed-a.signed||b.rate-a.rate||b.total-a.total||a.label.localeCompare(b.label,'fr'))
+  .slice(0,20);
+
+ const professionHtml=professionGroups.length
+  ?`<div class="panel">${professionGroups.map(x=>`
+    <div class="bar-row">
+     <span>${esc(x.label)}</span>
+     <div class="bar" title="${x.signed} personne(s) sachant signer sur ${x.total}">
+      <span style="width:${Math.max(0,Math.min(100,x.rate)).toFixed(3)}%"></span>
+     </div>
+     <strong>${x.signed}/${x.total} · ${x.rate.toLocaleString('fr-FR',{maximumFractionDigits:1})} %</strong>
+    </div>`).join('')}</div>`
+  :empty();
+
+ return `<section><h2>Statistiques — Signatures</h2>
+  <div class="stat-matrix">
+   ${tile('Ensemble',group(''))}${tile('Hommes',group('M'))}${tile('Femmes',group('F'))}
+   <div class="stat-tile"><span>Mentions exploitables</span><strong>${rows.length}</strong></div>
+  </div>
+  <h3>Capacité à signer selon la profession</h3>
+  <div class="notice">Ici, une personne n’est comptée qu’une seule fois par profession. Le pourcentage correspond au nombre de personnes de cette profession ayant signé au moins un acte, rapporté à l’ensemble des personnes uniques exerçant cette profession.</div>
+  ${professionHtml}
+ </section>`;
+}
 function clergyRows(){const map=new Map();for(const r of state.records||[]){if(r.type==='libre')continue;const name=safe(r.fields?.priest).trim()||'Non renseigné';const g=map.get(name)||{name,count:0,types:new Map(),months:new Map(),transcribed:0,totalChars:0,professionMentioned:0,residenceMentioned:0};g.count++;g.types.set(r.type,(g.types.get(r.type)||0)+1);const y=safe(r.date).slice(0,4),m=safe(r.date).slice(5,7);if(y&&m)g.months.set(`${y}-${m}`,(g.months.get(`${y}-${m}`)||0)+1);if(r.transcription){g.transcribed++;g.totalChars+=r.transcription.length}const text=JSON.stringify(r.fields||{});if(/Occupation|occupation|Profession|profession/.test(text))g.professionMentioned++;if(/Home|home|Residence|residence/.test(text))g.residenceMentioned++;map.set(name,g)}return [...map.values()].sort((a,b)=>b.count-a.count)}
 function renderClergyStatistics(){const rows=clergyRows(),years=[...new Set(state.records.map(r=>safe(r.date).slice(0,4)).filter(Boolean))].sort();return `<section><h2>Statistiques — Clergé</h2><div class="grid two">${rows.map(x=>{const absent=[];for(const y of years)for(let m=1;m<=12;m++){const key=`${y}-${String(m).padStart(2,'0')}`;const corpusHas=state.records.some(r=>safe(r.date).startsWith(key)&&r.type!=='libre');if(corpusHas&&!x.months.has(key))absent.push(`${monthName(m-1)} ${y}`)}return `<button class="card clergy-button" data-action="view-clergy" data-name="${esc(x.name)}"><span><strong>${esc(x.name)}</strong><small>${[...x.types].map(([t,n])=>`${TYPE_LABELS[t]||t} : ${n}`).join(' · ')}</small></span><span>${x.count}</span><div class="small muted">Mois sans acte dans le corpus : ${esc(absent.slice(0,8).join(', ')||'aucun')}${absent.length>8?'…':''}</div></button>`}).join('')||empty()}</div></section>`}
 function repeatedGodparentPairs(){const map=new Map();for(const r of state.records.filter(r=>r.type==='baptisme')){const ids=(r.fields?.godparents||[]).map(x=>x.personId).filter(Boolean);if(ids.length<2)continue;const key=ids.sort().join('|'),row=map.get(key)||{ids,count:0,records:[]};row.count++;row.records.push(r.id);map.set(key,row)}return [...map.values()].filter(x=>x.count>1).sort((a,b)=>b.count-a.count)}
@@ -8327,6 +8368,199 @@ function cleanupExactTechnicalClones(){
 
 
 
+
+function personRelationNameSet(person,key){
+ const ids=Array.isArray(person?.[key])?person[key]:[];
+ return new Set(ids.map(id=>byId(state.people,id)).filter(Boolean).map(p=>personIdentityKey(p.lastName,p.firstNames)).filter(Boolean));
+}
+function personRecordDateRange(person){
+ const dates=(person?.recordIds||[]).map(id=>byId(state.records,id)?.date).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(safe(d))).sort();
+ return {first:dates[0]||'',last:dates.at(-1)||''};
+}
+function datesWithinYears(a,b,years=15){
+ if(!a||!b)return false;
+ const da=new Date(`${a}T12:00:00`),db=new Date(`${b}T12:00:00`);
+ if(Number.isNaN(da.getTime())||Number.isNaN(db.getTime()))return false;
+ return Math.abs(db-da)/(365.2425*86400000)<=years;
+}
+function personSignatureEvidence(personId){
+ const values=new Set();
+ const p=byId(state.people,personId);
+ if(['oui','non'].includes(norm(p?.signature)))values.add(norm(p.signature));
+ for(const r of state.records||[]){
+  const f=r.fields||{};
+  const direct=[
+   ['husbandPersonId','husbandSigned'],['wifePersonId','wifeSigned'],
+   ['fatherPersonId','fatherSigned'],['motherPersonId','motherSigned'],
+   ['husbandFatherPersonId','husbandFatherSigned'],['husbandMotherPersonId','husbandMotherSigned'],
+   ['wifeFatherPersonId','wifeFatherSigned'],['wifeMotherPersonId','wifeMotherSigned']
+  ];
+  for(const [pidKey,signedKey] of direct){
+   if(f[pidKey]===personId&&['oui','non'].includes(norm(f[signedKey])))values.add(norm(f[signedKey]));
+  }
+  for(const group of ['godparents','burialWitnesses','deathDeclarants','witnessesDetailed']){
+   for(const item of f[group]||[]){
+    if(item.personId===personId&&['oui','non'].includes(norm(item.signed)))values.add(norm(item.signed));
+   }
+  }
+ }
+ return values;
+}
+function personHasHardIdentityConflict(a,b){
+ if(!a||!b)return true;
+ if(a.sex&&b.sex&&a.sex!==b.sex)return true;
+ const exactDateConflict=(ka,kb=ka)=>{
+  const va=safe(a[ka]).trim(),vb=safe(b[kb]).trim();
+  return va&&vb&&va!==vb;
+ };
+ if(exactDateConflict('birthDate'))return true;
+ if(exactDateConflict('baptismDate'))return true;
+ if(exactDateConflict('deathDate'))return true;
+ if(exactDateConflict('burialDate'))return true;
+ return false;
+}
+function sharedSetValues(a,b){
+ return [...a].filter(x=>b.has(x));
+}
+function duplicateIdentityEvidence(a,b){
+ const evidence=[];
+ if(!a||!b)return evidence;
+ const spouseShared=sharedSetValues(personRelationNameSet(a,'spouseIds'),personRelationNameSet(b,'spouseIds'));
+ const childShared=sharedSetValues(personRelationNameSet(a,'childIds'),personRelationNameSet(b,'childIds'));
+ const parentShared=sharedSetValues(personRelationNameSet(a,'parentIds'),personRelationNameSet(b,'parentIds'));
+ const sharedRecords=(a.recordIds||[]).filter(id=>(b.recordIds||[]).includes(id));
+
+ if(sharedRecords.length)evidence.push({kind:'shared-record',weight:5});
+ if(spouseShared.length)evidence.push({kind:'same-spouse-name',weight:5});
+ if(childShared.length)evidence.push({kind:'same-child-name',weight:4});
+ if(parentShared.length)evidence.push({kind:'same-parent-name',weight:4});
+ if(a.birthDate&&b.birthDate&&a.birthDate===b.birthDate)evidence.push({kind:'same-birth',weight:5});
+ if(a.baptismDate&&b.baptismDate&&a.baptismDate===b.baptismDate)evidence.push({kind:'same-baptism',weight:5});
+ if(a.deathDate&&b.deathDate&&a.deathDate===b.deathDate)evidence.push({kind:'same-death',weight:5});
+
+ const occA=norm(a.mainOccupation),occB=norm(b.mainOccupation);
+ if(occA&&occB&&occA===occB)evidence.push({kind:'same-occupation',weight:2});
+
+ const resA=norm(a.residence),resB=norm(b.residence);
+ if(resA&&resB&&resA===resB)evidence.push({kind:'same-residence',weight:2});
+
+ const sigA=personSignatureEvidence(a.id),sigB=personSignatureEvidence(b.id);
+ if(sigA.size&&sigB.size&&sharedSetValues(sigA,sigB).length)evidence.push({kind:'same-signature-capacity',weight:1});
+
+ const rangeA=personRecordDateRange(a),rangeB=personRecordDateRange(b);
+ const close=
+  datesWithinYears(rangeA.first,rangeB.first,15)||
+  datesWithinYears(rangeA.last,rangeB.first,15)||
+  datesWithinYears(rangeA.first,rangeB.last,15);
+ if(close)evidence.push({kind:'close-in-time',weight:1});
+ return evidence;
+}
+function personRichnessScore(p){
+ return [
+  p.birthDate,p.baptismDate,p.deathDate,p.burialDate,p.mainOccupation,p.residence,
+  ...(p.parentIds||[]),...(p.spouseIds||[]),...(p.childIds||[]),...(p.familyIds||[]),...(p.recordIds||[])
+ ].filter(Boolean).length;
+}
+function isThinIdentityMention(p){
+ return (p.recordIds||[]).length<=1 &&
+  !(p.parentIds||[]).length &&
+  !(p.spouseIds||[]).length &&
+  !(p.childIds||[]).length &&
+  !p.birthDate&&!p.baptismDate&&!p.deathDate&&!p.burialDate&&!p.mainOccupation;
+}
+function mergePeopleSilently(sourceId,targetId,reason=''){
+ if(sourceId===targetId)return false;
+ const s=byId(state.people,sourceId),t=byId(state.people,targetId);
+ if(!s||!t)return false;
+
+ const conflicts=identityConflicts(s,t);
+ for(const key of ['lastName','firstNames','usualName','nickname','sex','mainOccupation','otherOccupations','religion','signature','birthDate','birthPlace','baptismDate','baptismPlace','deathDate','deathPlace','burialDate','burialPlace','residence','confidence']){
+  if(!t[key]&&s[key])t[key]=s[key];
+ }
+ if(conflicts.length){
+  const text=`Fusion automatique prudente avec ${personName(s)} — divergences conservées : `+
+   conflicts.map(c=>`${c.label} [${c.a} / ${c.b}]`).join('; ');
+  t.notes=[safe(t.notes),safe(s.notes),text].filter(Boolean).join('\n');
+ }else{
+  t.notes=[safe(t.notes),safe(s.notes)].filter(Boolean).join('\n');
+ }
+ if(reason){
+  const note=`Rapprochement automatique de fiches doublons : ${reason}.`;
+  if(!safe(t.notes).includes(note))t.notes=[safe(t.notes),note].filter(Boolean).join('\n');
+ }
+ for(const key of ['recordIds','familyIds','spouseIds','childIds','parentIds']){
+  t[key]=[...new Set([...(t[key]||[]),...(s[key]||[])].filter(id=>id&&id!==t.id&&id!==s.id))];
+ }
+ rewriteAllPersonReferences(sourceId,targetId);
+ state.people=state.people.filter(p=>p.id!==sourceId);
+ t.updatedAt=now();
+ return true;
+}
+function cleanupStrongIdentityDuplicates(){
+ const groups=new Map();
+ for(const p of state.people||[]){
+  const key=personIdentityKey(p.lastName,p.firstNames);
+  if(!key||key==='|')continue;
+  const arr=groups.get(key)||[];
+  arr.push(p);groups.set(key,arr);
+ }
+
+ let removed=0;
+ const log=[];
+ for(const originalGroup of groups.values()){
+  if(originalGroup.length<2)continue;
+
+  let group=originalGroup.filter(p=>byId(state.people,p.id));
+  let changed=true;
+  while(changed&&group.length>1){
+   changed=false;
+   outer:
+   for(let i=0;i<group.length;i++){
+    for(let j=i+1;j<group.length;j++){
+     const a=byId(state.people,group[i].id),b=byId(state.people,group[j].id);
+     if(!a||!b)continue;
+     if(isConfirmedDistinct(a.id,b.id)||personHasHardIdentityConflict(a,b))continue;
+
+     const evidence=duplicateIdentityEvidence(a,b);
+     const score=evidence.reduce((sum,x)=>sum+x.weight,0);
+     const kinds=new Set(evidence.map(x=>x.kind));
+     const structural=
+      kinds.has('shared-record')||kinds.has('same-spouse-name')||
+      kinds.has('same-child-name')||kinds.has('same-parent-name')||
+      kinds.has('same-birth')||kinds.has('same-baptism')||kinds.has('same-death');
+     const occupationResidence=
+      kinds.has('same-occupation')&&kinds.has('same-residence')&&
+      (kinds.has('close-in-time')||kinds.has('same-signature-capacity'));
+     const thinCandidate=
+      (isThinIdentityMention(a)||isThinIdentityMention(b))&&
+      kinds.has('close-in-time')&&kinds.has('same-signature-capacity');
+
+     if(!(structural||score>=5||occupationResidence||thinCandidate))continue;
+
+     const keep=personRichnessScore(a)>=personRichnessScore(b)?a:b;
+     const source=keep.id===a.id?b:a;
+     const reason=evidence.map(x=>x.kind).join(', ');
+     if(mergePeopleSilently(source.id,keep.id,reason)){
+      removed++;
+      log.push({kept:keep.id,removed:source.id,name:personName(keep),reason});
+      group=group.filter(p=>p.id!==source.id);
+      changed=true;
+      break outer;
+     }
+    }
+   }
+  }
+ }
+ if(removed){
+  normalizeIdentityGraph();
+  state.metadata=state.metadata||{};
+  state.metadata.strongIdentityCleanupAt=now();
+  state.metadata.strongIdentityCleanupCount=(state.metadata.strongIdentityCleanupCount||0)+removed;
+  state.metadata.strongIdentityCleanupLast=log.slice(-100);
+ }
+ return removed;
+}
+
 function isSchoolmasterOccupation(value=''){
  const cleaned=norm(value).replace(/[’']/g,' ').replace(/\s+/g,' ').trim();
  return cleaned==='maitre d ecole'||cleaned==='d ecole'||cleaned==='maitre ecole';
@@ -8564,7 +8798,8 @@ function rebuildEntitiesFromExistingRecords(){
  migrateResidences();
  migrateStructuredAges();
  const removed=cleanupExactTechnicalClones();
- if(removed||technicalDuplicatesRemoved)saveState(true);
+ const strongIdentityDuplicatesRemoved=cleanupStrongIdentityDuplicates();
+ if(removed||technicalDuplicatesRemoved||strongIdentityDuplicatesRemoved)saveState(true);
 }
 async function init(){
  applyTheme(state.settings?.theme||'light');
