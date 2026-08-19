@@ -685,16 +685,19 @@ html[data-theme="dark"] .compact-logo{
 <div class="toast" id="toast"></div>
 <script>
 (()=>{'use strict';
-const KEY='memoire-famille-data',BACKUP='memoire-famille-backup',APP_VERSION='1.0.0';
+const KEY='memoire-famille-data',BACKUP='memoire-famille-backup',APP_VERSION='1.1.0';
 const tabs=[['dashboard','Tableau de bord'],['people','Individus'],['census','Recensements'],['tree','Arbre'],['research','Recherches'],['data','Données'],['settings','Réglages']];
-let state,activeTab='dashboard',dashboardView='overview',peopleView='people',dataView='quality',censusView='ancestors',treeScale=1,treeCollapsed=new Set(),hasUnsavedChanges=false,backupReminderDismissed=false,backupReminderMinimized=false;
+let state,activeTab='dashboard',dashboardView='overview',peopleView='people',dataView='quality',censusView='ancestors',treeScale=1,treeCollapsed=new Set(),hasUnsavedChanges=false,backupReminderDismissed=false,backupReminderMinimized=false,modalReturnFocus=null;
 const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const stripDiacritics=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+const debounce=(fn,wait=200)=>{let t;return(...args)=>{clearTimeout(t);t=setTimeout(()=>fn(...args),wait)}};
+const FOCUSABLE_SEL='a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 const now=()=>new Date().toISOString();
 const uid=p=>`${p}_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
 const val=(o,path,d='')=>path.split('.').reduce((a,k)=>a&&a[k]!==undefined?a[k]:undefined,o)??d;
 const year=d=>{const m=String(d||'').match(/(\d{4})/);return m?+m[1]:null};
-const fmtDate=d=>{if(!d)return'—';const x=new Date(d+'T00:00:00');if(Number.isNaN(x))return esc(d);return state.settings.dateFormat==='iso'?d:x.toLocaleDateString('fr-FR')};
+const fmtDate=d=>{if(!d)return'—';const x=new Date(d+'T00:00:00');if(Number.isNaN(x.getTime()))return esc(d);return state.settings.dateFormat==='iso'?d:x.toLocaleDateString('fr-FR')};
 const age=(a,b)=>{const y1=year(a),y2=year(b);return y1&&y2?y2-y1:null};
 const fullName=p=>p?`${p.firstNames||''} ${p.lastName||''}`.trim():'Inconnu';
 const fullNameHtml=p=>p?`${esc(p.firstNames||'')} ${p.lastName?`<span class="surname">${esc(p.lastName)}</span>`:''}`.trim():'Inconnu';
@@ -702,17 +705,28 @@ const getPerson=id=>state.people.find(x=>x.id===id),getFamily=id=>state.families
 function defaultState(){return{version:APP_VERSION,settings:{theme:'light',rootPersonId:'',generations:4,showPortraits:true,showSosa:true,detailLevel:'normal',dateFormat:'fr',defaultBranch:''},people:[],families:[],sources:[],places:[],research:[],media:[],relations:[],metadata:{createdAt:now(),updatedAt:now(),demoLoaded:true,demoTouched:false}}}
 function normalize(s){
  const d=defaultState(),out={...d,...(s||{})};
+ const normalizeRepairs=[];
  for(const k of ['people','families','sources','places','research','media','relations'])out[k]=Array.isArray(out[k])?out[k]:[];
  out.settings={...d.settings,...(out.settings||{})};out.settings.generations=Math.min(4,Math.max(1,+out.settings.generations||4));out.metadata={...d.metadata,...(out.metadata||{})};
  // Répare systématiquement les liens issus d'un import GEDCOM/JSON.
  const peopleById=new Map(out.people.filter(p=>p&&p.id).map(p=>[p.id,p]));
  out.people.forEach(p=>{p.parentFamilyId=p.parentFamilyId||'';p.spouseFamilyIds=Array.isArray(p.spouseFamilyIds)?p.spouseFamilyIds.filter(Boolean):[]});
  out.families.forEach(f=>{
-  f.childIds=[...new Set(Array.isArray(f.childIds)?f.childIds.filter(id=>peopleById.has(id)):[])];
+  const before=Array.isArray(f.childIds)?f.childIds.filter(Boolean):[];
+  const orphaned=before.filter(id=>!peopleById.has(id));
+  if(orphaned.length){
+   console.warn(`Arboris : ${orphaned.length} lien(s) enfant orphelin(s) retiré(s) de la famille ${f.id} lors du chargement.`);
+   normalizeRepairs.push(`${orphaned.length} lien(s) enfant orphelin(s) (famille ${f.id})`);
+  }
+  f.childIds=[...new Set(before.filter(id=>peopleById.has(id)))];
   [f.partner1Id,f.partner2Id].filter(id=>peopleById.has(id)).forEach(id=>{const p=peopleById.get(id);p.spouseFamilyIds=[...new Set([...p.spouseFamilyIds,f.id])]});
   f.childIds.forEach(id=>{const child=peopleById.get(id);if(child&&!child.parentFamilyId)child.parentFamilyId=f.id});
  });
  if(!peopleById.has(out.settings.rootPersonId))out.settings.rootPersonId=out.people[0]?.id||'';
+ if(normalizeRepairs.length){
+  const detail=normalizeRepairs.join(' · ');
+  setTimeout(()=>{try{toast(`Vérification des données : ${detail}. Voir la console pour le détail.`,6000)}catch(e){}},300);
+ }
  return out
 }
 function purgeLegacyDemoData(s){
@@ -748,7 +762,7 @@ function load(){
 function save(mark=true){try{if(mark){state.metadata.updatedAt=now();backupReminderDismissed=false}localStorage.setItem(KEY,JSON.stringify(state));applyTheme()}catch(e){toast('Échec de sauvegarde : stockage plein ou indisponible')};render();updateBackupBar()}
 function backup(){localStorage.setItem(BACKUP,JSON.stringify(state))}
 function applyTheme(){let t=state?.settings?.theme||'light';if(t==='auto')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.dataset.theme=t}
-function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200)}
+function toast(msg,ms=2200){const t=$('#toast');if(!t)return;t.textContent=msg;t.classList.add('show');clearTimeout(t._hideTimer);t._hideTimer=setTimeout(()=>t.classList.remove('show'),ms)}
 
 if(activeTab==='families'){activeTab='people';peopleView='families'}
 if(activeTab==='places'){activeTab='data';dataView='places'}
@@ -759,7 +773,7 @@ if(activeTab==='stats'){activeTab='dashboard';dashboardView='stats'};
 
 
 function migrateRequestedPlaces(){
-  const n=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const n=v=>stripDiacritics(v).toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
   const rules=[
     [['aux bois','fourneaux'],'lieu-dit','Fourneaux','Aux Bois'],
     [['balbigny'],'commune','Balbigny',''],
@@ -831,7 +845,7 @@ function migrateDataQuality(){
     ['valsonnne','Valsonne'],['thizy les bourg','Thizy-les-Bourgs'],['rozier en donzy','Rozier-en-Donzy'],
     ['le puy en velay','Le Puy-en-Velay']
   ]);
-  const n=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
+  const n=v=>stripDiacritics(v).toLowerCase()
     .replace(/\bste\b/g,'sainte').replace(/\bst\b/g,'saint').replace(/[^a-z0-9']+/g,' ').trim();
   const canon=v=>{
     const raw=String(v||'').trim().replace(/\s*-\s*(Loire|Rhône|Haute-Loire|Ardèche|Oise)\s*$/i,'')
@@ -1219,7 +1233,7 @@ function dashboardImplexSection(){
 }
 
 function qualityNorm(value){
-  return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+  return stripDiacritics(value)
     .toLocaleLowerCase('fr-FR').replace(/[^a-z0-9]+/g,' ').trim()
 }
 function qualityEventYear(event){
@@ -1241,6 +1255,56 @@ function qualityLevenshtein(a,b){
   for(let i=1;i<=b.length;i++)for(let j=1;j<=a.length;j++)
     m[i][j]=Math.min(m[i-1][j]+1,m[i][j-1]+1,m[i-1][j-1]+(a[j-1]===b[i-1]?0:1));
   return m[b.length][a.length]
+}
+function integrityIssues(){
+  const issues=[];
+  const peopleById=new Map(state.people.map(p=>[p.id,p]));
+  const familiesById=new Map(state.families.map(f=>[f.id,f]));
+  const placesById=new Map(state.places.map(pl=>[pl.id,pl]));
+  const sourcesById=new Map(state.sources.map(s=>[s.id,s]));
+
+  const seenPersonIds=new Set();
+  state.people.forEach(p=>{
+    if(seenPersonIds.has(p.id))issues.push(qualityIssue('integrite','error','Identifiant d’individu dupliqué',`L’identifiant ${p.id} est utilisé par plusieurs fiches individu.`,'person',p.id));
+    seenPersonIds.add(p.id);
+  });
+  const seenFamilyIds=new Set();
+  state.families.forEach(f=>{
+    if(seenFamilyIds.has(f.id))issues.push(qualityIssue('integrite','error','Identifiant de famille dupliqué',`L’identifiant ${f.id} est utilisé par plusieurs familles.`,'family',f.id));
+    seenFamilyIds.add(f.id);
+  });
+
+  state.families.forEach(f=>{
+    [['partenaire 1',f.partner1Id],['partenaire 2',f.partner2Id]].forEach(([label,pid])=>{
+      if(pid&&!peopleById.has(pid))issues.push(qualityIssue('integrite','error','Référence vers un individu inexistant',`La famille ${f.id} (${label}) pointe vers un individu introuvable.`,'family',f.id));
+    });
+    (f.childIds||[]).forEach(cid=>{
+      const child=peopleById.get(cid);
+      if(!child){issues.push(qualityIssue('integrite','error','Enfant introuvable',`La famille ${f.id} référence un enfant introuvable.`,'family',f.id));return}
+      if(child.parentFamilyId!==f.id)issues.push(qualityIssue('integrite','error','Filiation à sens unique',`${qualityPersonLabel(child)} est listé comme enfant de la famille ${f.id}, mais sa fiche pointe vers une autre famille (ou aucune).`,'person',child.id,{relatedId:f.id}));
+    });
+    if(f.marriage?.placeId&&!placesById.has(f.marriage.placeId))issues.push(qualityIssue('integrite','warning','Lieu de mariage introuvable',`La famille ${f.id} référence un lieu de mariage qui n’existe plus dans le fichier des lieux.`,'family',f.id));
+    (f.sourceIds||[]).forEach(sid=>{if(!sourcesById.has(sid))issues.push(qualityIssue('integrite','warning','Source introuvable',`La famille ${f.id} référence une source qui n’existe plus.`,'family',f.id))});
+  });
+
+  state.people.forEach(p=>{
+    if(p.parentFamilyId){
+      const fam=familiesById.get(p.parentFamilyId);
+      if(!fam)issues.push(qualityIssue('integrite','error','Famille parentale introuvable',`${qualityPersonLabel(p)} référence une famille parentale qui n’existe plus.`,'person',p.id));
+      else if(!(fam.childIds||[]).includes(p.id))issues.push(qualityIssue('integrite','error','Filiation à sens unique',`${qualityPersonLabel(p)} indique la famille ${fam.id} comme parents, mais cette famille ne le liste pas parmi ses enfants.`,'person',p.id,{relatedId:fam.id}));
+    }
+    (p.spouseFamilyIds||[]).forEach(fid=>{
+      const fam=familiesById.get(fid);
+      if(!fam){issues.push(qualityIssue('integrite','error','Union introuvable',`${qualityPersonLabel(p)} référence une union qui n’existe plus.`,'person',p.id));return}
+      if(fam.partner1Id!==p.id&&fam.partner2Id!==p.id)issues.push(qualityIssue('integrite','error','Union à sens unique',`${qualityPersonLabel(p)} indique une union avec la famille ${fam.id}, mais cette famille ne le liste pas comme conjoint.`,'person',p.id,{relatedId:fam.id}));
+    });
+    [['naissance',p.birth],['décès',p.death],['baptême',p.baptism],['sépulture',p.burial]].forEach(([label,ev])=>{
+      if(ev?.placeId&&!placesById.has(ev.placeId))issues.push(qualityIssue('integrite','warning',`Lieu de ${label} introuvable`,`${qualityPersonLabel(p)} référence un lieu de ${label} qui n’existe plus.`,'person',p.id));
+    });
+    (p.sourceIds||[]).forEach(sid=>{if(!sourcesById.has(sid))issues.push(qualityIssue('integrite','warning','Source introuvable',`${qualityPersonLabel(p)} référence une source qui n’existe plus.`,'person',p.id))});
+  });
+
+  return issues;
 }
 function qualityIssues(){
   const issues=[];
@@ -1354,11 +1418,11 @@ function qualityIssues(){
       }
     }
   }
-  return issues
+  return issues.concat(integrityIssues())
 }
 function qualityTypeLabel(type){
   return({dates:'Dates incohérentes',doublons:'Doublons',lieux:'Lieux',professions:'Professions',
-    sosa:'Sosa',incomplet:'Informations incomplètes',sources:'Sources absentes'})[type]||type
+    sosa:'Sosa',incomplet:'Informations incomplètes',sources:'Sources absentes',integrite:'Intégrité des données'})[type]||type
 }
 function qualitySeverityLabel(severity){
   return({error:'Erreur',warning:'À vérifier',info:'À compléter'})[severity]||severity
@@ -1428,9 +1492,10 @@ function compareQualityPlaces(aId,bId){
   bindQuality($('#modalBody'))
 }
 function bindQuality(root=document){
-  $('#qualityType',root)?.addEventListener('input',filterQuality);
-  $('#qualitySeverity',root)?.addEventListener('input',filterQuality);
-  $('#qualitySearch',root)?.addEventListener('input',filterQuality);
+  const dFilterQuality=debounce(filterQuality,200);
+  $('#qualityType',root)?.addEventListener('input',dFilterQuality);
+  $('#qualitySeverity',root)?.addEventListener('input',dFilterQuality);
+  $('#qualitySearch',root)?.addEventListener('input',dFilterQuality);
   $$('[data-quality-refresh]',root).forEach(b=>b.onclick=()=>render());
   $$('[data-quality-fix-person]',root).forEach(b=>b.onclick=()=>openModal('Corriger un individu',personForm(getPerson(b.dataset.qualityFixPerson))));
   $$('[data-quality-fix-family]',root).forEach(b=>b.onclick=()=>openModal('Corriger un couple',familyForm(getFamily(b.dataset.qualityFixFamily))));
@@ -1708,7 +1773,7 @@ function bindCensusMemberControls(form){
   $$('[data-cancel-census-member]',form).forEach(b=>b.onclick=()=>{const row=b.closest('tr'),cols=readCensusColumns(form),i=Number(row.dataset.memberIndex),m=memberFromEditor(row,cols);row.outerHTML=censusSavedRow(m,i,cols);bindCensusMemberControls(form)});
   $$('[data-delete-census-member]',form).forEach(b=>b.onclick=()=>{b.closest('tr')?.remove();bindCensusMemberControls(form)});
   $$('[data-add-census-column]',form).forEach(b=>b.onclick=()=>{const label=prompt('Nom du nouveau champ :','Patron / employeur');if(!label?.trim())return;const cols=readCensusColumns(form),base=qualityNorm(label).replace(/\s+/g,'_')||'champ';let key=base,n=2;while(cols.some(c=>c.key===key))key=`${base}_${n++}`;cols.push({key,label:label.trim(),type:'text',required:false});$('#censusColumnsJson',form).value=JSON.stringify(cols);$('#censusTableHead',form).innerHTML=censusHeader(cols);$$('#censusRows tr',form).forEach(row=>{const td=document.createElement('td');td.dataset.colKey=key;const i=row.dataset.memberIndex;td.innerHTML=row.dataset.memberSaved==='true'?`<span class="member-value">—</span><input type="hidden" name="m.${i}.${key}" value="">`:`<input name="m.${i}.${key}" value="">`;row.insertBefore(td,row.lastElementChild)});bindCensusMemberControls(form)});
-  $$('[data-remove-census-column]',form).forEach(b=>b.onclick=()=>{const key=b.dataset.removeCensusColumn,cols=readCensusColumns(form).filter(c=>c.key!==key);$('#censusColumnsJson',form).value=JSON.stringify(cols);form.querySelectorAll(`[data-col-key="${CSS.escape(key)}"]`).forEach(x=>x.remove());$('#censusTableHead',form).innerHTML=censusHeader(cols);bindCensusMemberControls(form)})
+  $$('[data-remove-census-column]',form).forEach(b=>b.onclick=()=>{const key=b.dataset.removeCensusColumn;const hasData=$$(`[name$=".${key}"]`,form).some(el=>(el.value||'').trim());if(hasData&&!confirm('Cette colonne contient des données déjà saisies pour ce ménage. Les supprimer définitivement pour tous les membres ?'))return;const cols=readCensusColumns(form).filter(c=>c.key!==key);$('#censusColumnsJson',form).value=JSON.stringify(cols);form.querySelectorAll(`[data-col-key="${CSS.escape(key)}"]`).forEach(x=>x.remove());$('#censusTableHead',form).innerHTML=censusHeader(cols);bindCensusMemberControls(form)})
 }
 
 function censusSplitName(rawName){
@@ -2300,11 +2365,19 @@ function installModalCloseHandlers(){
       event.preventDefault();
       closeModal();
     }
+    if(event.key==='Tab'&&$('#modal')?.classList.contains('open')){
+      const items=Array.from($('#modal').querySelectorAll(FOCUSABLE_SEL));
+      if(!items.length)return;
+      const first=items[0],last=items[items.length-1];
+      if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus()}
+      else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}
+      else if(!items.includes(document.activeElement)){event.preventDefault();first.focus()}
+    }
   });
 }
 
-function openModal(title,html){clearUnsaved();$('#modalTitle').textContent=title;$('#modalBody').innerHTML=html;$('#modal').classList.add('open');$('#modal').setAttribute('aria-hidden','false');bindModal()}
-function closeModal(force=false){if(hasUnsavedChanges&&!force&&!confirm('Des modifications ne sont pas enregistrées. Les abandonner ?'))return false;clearUnsaved();$('#modal').classList.remove('open');$('#modal').setAttribute('aria-hidden','true');return true}
+function openModal(title,html){clearUnsaved();modalReturnFocus=document.activeElement;$('#modalTitle').textContent=title;$('#modalBody').innerHTML=html;$('#modal').classList.add('open');$('#modal').setAttribute('aria-hidden','false');bindModal();const target=$('#modalBody').querySelector(FOCUSABLE_SEL)||$('#modal').querySelector('[data-close-modal]');target?.focus({preventScroll:true})}
+function closeModal(force=false){if(hasUnsavedChanges&&!force&&!confirm('Des modifications ne sont pas enregistrées. Les abandonner ?'))return false;clearUnsaved();$('#modal').classList.remove('open');$('#modal').setAttribute('aria-hidden','true');const restore=modalReturnFocus;modalReturnFocus=null;if(restore&&document.contains(restore)){try{restore.focus({preventScroll:true})}catch(e){}}return true}
 function input(name,label,value='',type='text',extra=''){return`<div class="field"><label>${label}</label><input name="${name}" type="${type}" value="${esc(value)}" ${extra}></div>`}
 function textarea(name,label,value=''){return`<div class="field full-width"><label>${label}</label><textarea name="${name}">${esc(value)}</textarea></div>`}
 function select(name,label,value,opts){return`<div class="field"><label>${label}</label><select name="${name}">${opts.map(([v,l])=>`<option value="${esc(v)}" ${String(v)===String(value)?'selected':''}>${esc(l)}</option>`).join('')}</select></div>`}
@@ -2431,11 +2504,7 @@ function saveEntity(kind,obj,id){const arr=state[kind],old=arr.find(x=>x.id===id
 function validateFamily(f,id){if(!f.partner1Id&&!f.partner2Id)throw new Error('Ajoutez au moins un conjoint.');if(f.partner1Id&&f.partner1Id===f.partner2Id)throw new Error('Une personne ne peut pas être son propre conjoint.');if((f.childIds||[]).includes(f.partner1Id)||(f.childIds||[]).includes(f.partner2Id))throw new Error('Un conjoint ne peut pas être son propre enfant.');const dup=state.families.find(x=>x.id!==id&&new Set([x.partner1Id,x.partner2Id]).size===new Set([f.partner1Id,f.partner2Id]).size&&[x.partner1Id,x.partner2Id].every(v=>[f.partner1Id,f.partner2Id].includes(v)));if(dup&&!confirm('Une union similaire existe déjà. Continuer ?'))throw new Error('Enregistrement annulé.');f.childIds=[...new Set(f.childIds||[])];const py=[f.partner1Id,f.partner2Id].map(getPerson).filter(Boolean);for(const cId of f.childIds){const c=getPerson(cId);for(const par of py){if(par.id===c.id)throw new Error('Relation impossible.');const by=year(val(par,'birth.date')),cy=year(val(c,'birth.date'));if(by&&cy&&by>cy&&!confirm(`${fullName(par)} semble né après son enfant. Continuer ?`))throw new Error('Enregistrement annulé.')}}}
 function syncFamilyLinks(f,id){state.people.forEach(p=>{p.spouseFamilyIds=(p.spouseFamilyIds||[]).filter(x=>x!==id);if(p.parentFamilyId===id)p.parentFamilyId=''});[f.partner1Id,f.partner2Id].filter(Boolean).forEach(pid=>{const p=getPerson(pid);p.spouseFamilyIds=[...new Set([...(p.spouseFamilyIds||[]),id])]});(f.childIds||[]).forEach(cid=>{const c=getPerson(cid);if(c)c.parentFamilyId=id})}
 function normalizePersonSearch(value){
-  return String(value||'')
-    .toLocaleLowerCase('fr-FR')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g,'')
-    .trim();
+  return stripDiacritics(String(value||'').toLocaleLowerCase('fr-FR')).trim();
 }
 
 function bindPersonLinkSearch(root){
@@ -2529,7 +2598,7 @@ $$('[data-census-view]',root).forEach(button=>button.onclick=()=>{
 });
 
 ensureCensus();
-$('#censusSearch',root)?.addEventListener('input',()=>{const q=qualityNorm($('#censusSearch',root).value);$$('[data-census-text]',root).forEach(x=>x.hidden=!!q&&!qualityNorm(x.dataset.censusText).includes(q))});
+$('#censusSearch',root)?.addEventListener('input',debounce(()=>{const q=qualityNorm($('#censusSearch',root).value);$$('[data-census-text]',root).forEach(x=>x.hidden=!!q&&!qualityNorm(x.dataset.censusText).includes(q))},200));
 $$('[data-open-census]',root).forEach(b=>b.onclick=()=>openCensus(b.dataset.openCensus,b.dataset.year));
 $$('[data-new-census]',root).forEach(b=>b.onclick=()=>{openModal('Nouveau ménage recensé',censusForm());bindView($('#modalBody'));bindCensusMemberControls($('#censusForm'))});
 const censusFormElement=$('#censusForm',root);if(censusFormElement){bindCensusMemberControls(censusFormElement);censusFormElement.addEventListener('submit',e=>{e.preventDefault();saveCensus(e.currentTarget)})}
@@ -2549,8 +2618,9 @@ $$('[data-remove-notable]',root).forEach(button=>button.onclick=()=>{
 $$('[data-dashboard-view]',root).forEach(b=>b.onclick=()=>{dashboardView=b.dataset.dashboardView;render()});
 $$('[data-people-view]',root).forEach(b=>b.onclick=()=>{peopleView=b.dataset.peopleView;render()});
 $$('[data-data-view]',root).forEach(b=>b.onclick=()=>{dataView=b.dataset.dataView;activeTab='data';render()});
-$('#sf-q',root)?.addEventListener('input',filterSources);
-$('#sf-type',root)?.addEventListener('input',filterSources);
+const dFilterSources=debounce(filterSources,200);
+$('#sf-q',root)?.addEventListener('input',dFilterSources);
+$('#sf-type',root)?.addEventListener('input',dFilterSources);
 $$('[data-show-implexes]',root).forEach(b=>b.onclick=showImplexDetails);$$('[data-dashboard-metric]',root).forEach(b=>b.onclick=()=>showDashboardMetric(b.dataset.dashboardMetric));$$('[data-tab]',root).forEach(b=>b.onclick=()=>{activeTab=b.dataset.tab;render()});$$('[data-go]',root).forEach(b=>b.onclick=()=>{
   const target=b.dataset.go;
   if(target==='families'){activeTab='people';peopleView='families'}
@@ -2574,7 +2644,7 @@ function addRelative(id,type){const p=getPerson(id);if(type==='spouse'){openModa
 function deletePerson(id){if(!confirm('Supprimer cet individu ?'))return;if(!confirm('Confirmez la suppression définitive de la fiche.'))return;state.people=state.people.filter(x=>x.id!==id);state.families.forEach(f=>{if(f.partner1Id===id)f.partner1Id='';if(f.partner2Id===id)f.partner2Id='';f.childIds=(f.childIds||[]).filter(x=>x!==id)});state.sources.forEach(s=>s.personIds=(s.personIds||[]).filter(x=>x!==id));save()}
 function deleteFamily(id){if(!confirm('Supprimer cette famille sans supprimer les individus ?'))return;state.families=state.families.filter(x=>x.id!==id);state.people.forEach(p=>{p.spouseFamilyIds=(p.spouseFamilyIds||[]).filter(x=>x!==id);if(p.parentFamilyId===id)p.parentFamilyId=''});save()}
 function deleteEntity(kind,id,label){if(!confirm(`Supprimer ${label} ?`))return;state[kind]=state[kind].filter(x=>x.id!==id);save()}
-function bindFilters(root){const ids=['pf-q','pf-sex','pf-commune','pf-dept','pf-country','pf-century','pf-branch','pf-sort','pf-direct','pf-incomplete','pf-nosource'];ids.forEach(id=>$('#'+id,root)?.addEventListener('input',filterPeople));['rf-priority','rf-status','rf-object','rf-person','rf-commune','rf-period','rf-blocked','rf-noresult','rf-urgent'].forEach(id=>$('#'+id,root)?.addEventListener('input',filterResearch));['lf-q','lf-dept','lf-region','lf-country','lf-sort'].forEach(id=>$('#'+id,root)?.addEventListener('input',filterPlaces))}
+function bindFilters(root){const ids=['pf-q','pf-sex','pf-commune','pf-dept','pf-country','pf-century','pf-branch','pf-sort','pf-direct','pf-incomplete','pf-nosource'];const dFilterPeople=debounce(filterPeople,200);ids.forEach(id=>$('#'+id,root)?.addEventListener('input',dFilterPeople));const dFilterResearch=debounce(filterResearch,200);['rf-priority','rf-status','rf-object','rf-person','rf-commune','rf-period','rf-blocked','rf-noresult','rf-urgent'].forEach(id=>$('#'+id,root)?.addEventListener('input',dFilterResearch));const dFilterPlaces=debounce(filterPlaces,200);['lf-q','lf-dept','lf-region','lf-country','lf-sort'].forEach(id=>$('#'+id,root)?.addEventListener('input',dFilterPlaces))}
 function filterPeople(){let a=[...state.people],q=$('#pf-q').value.toLowerCase(),sex=$('#pf-sex').value,comm=$('#pf-commune').value,dep=$('#pf-dept').value,c=$('#pf-country').value,cent=$('#pf-century').value,br=$('#pf-branch').value;if(q)a=a.filter(p=>fullName(p).toLowerCase().includes(q));if(sex)a=a.filter(p=>p.sex===sex);if(comm)a=a.filter(p=>val(p,'birth.commune')===comm);if(dep)a=a.filter(p=>val(p,'birth.department')===dep);if(c)a=a.filter(p=>val(p,'birth.country')===c);if(cent)a=a.filter(p=>{const y=year(val(p,'birth.date'));return y&&Math.floor((y-1)/100)+1===+cent});if(br)a=a.filter(p=>p.branch===br);if($('#pf-direct').checked)a=a.filter(p=>p.directAncestor);if($('#pf-incomplete').checked)a=a.filter(p=>completeness(p)<75);if($('#pf-nosource').checked)a=a.filter(p=>!(p.sourceIds||[]).length);const sort=$('#pf-sort').value;a.sort(sort==='sosa'?sortPeopleBySosa:sort==='chrono'?(x,y)=>(year(val(x,'birth.date'))||9999)-(year(val(y,'birth.date'))||9999):sort==='updated'?(x,y)=>new Date(y.updatedAt)-new Date(x.updatedAt):(x,y)=>fullName(x).localeCompare(fullName(y),'fr'));$('#peopleList').innerHTML=renderPersonList(a);bindView($('#peopleList'))}
 function filterResearch(){let a=[...state.research],pr=$('#rf-priority').value,st=$('#rf-status').value,obj=$('#rf-object').value.trim().toLowerCase(),pe=$('#rf-person').value.trim().toLowerCase(),communes=$('#rf-commune').value.split(';').map(x=>x.trim().toLowerCase()).filter(Boolean),per=$('#rf-period').value.trim().toLowerCase();if(pr)a=a.filter(x=>x.priority===pr);if(st)a=a.filter(x=>x.status===st);if(obj)a=a.filter(x=>(x.researchObject||'').toLowerCase().includes(obj));if(pe)a=a.filter(x=>fullName(getPerson(x.personId)).toLowerCase().includes(pe));if(communes.length)a=a.filter(x=>{const value=(x.commune||'').toLowerCase();return communes.some(commune=>value.includes(commune))});if(per)a=a.filter(x=>(x.period||'').toLowerCase().includes(per));if($('#rf-blocked').checked)a=a.filter(x=>x.status==='bloquée');if($('#rf-noresult').checked)a=a.filter(x=>!x.result);if($('#rf-urgent').checked)a=a.filter(x=>x.priority==='urgente');$('#researchList').innerHTML=renderResearchList(a);bindView($('#researchList'))}
 function filterPlaces(){let a=[...state.places],q=$('#lf-q').value.toLowerCase(),d=$('#lf-dept').value.toLowerCase(),r=$('#lf-region').value.toLowerCase(),c=$('#lf-country').value.toLowerCase();if(q)a=a.filter(x=>(x.name+' '+x.commune).toLowerCase().includes(q));if(d)a=a.filter(x=>(x.department||'').toLowerCase().includes(d));if(r)a=a.filter(x=>(x.region||'').toLowerCase().includes(r));if(c)a=a.filter(x=>(x.country||'').toLowerCase().includes(c));a.sort($('#lf-sort').value==='count'?(x,y)=>placeCounts(y).people.length-placeCounts(x).people.length:(x,y)=>(x.name||'').localeCompare(y.name||'','fr'));$('#placesList').innerHTML=renderPlaceList(a);bindView($('#placesList'))}
@@ -2609,8 +2679,6 @@ load();ensureCensus();installModalCloseHandlers();migrateRequestedPlaces();migra
 .bg-drive-btn[data-cloud-state="error"]::after,.bg-drive-btn[data-cloud-state="conflict"]::after{background:#c7332b}
 .bg-drive-btn[data-cloud-state="offline"]::after{background:#777}
 @keyframes bgCloudPulse{50%{opacity:.35}}
-.bg-drive-toast{position:fixed;left:50%;bottom:18px;z-index:20000;transform:translateX(-50%);max-width:min(92vw,620px);padding:10px 14px;border-radius:10px;background:#111;color:#fff;font:600 14px/1.35 system-ui,sans-serif;box-shadow:0 10px 30px rgba(0,0,0,.28);display:none;text-align:center}
-.bg-drive-toast.show{display:block}
 </style>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script id="bg-drive-sync-script">
@@ -2638,7 +2706,6 @@ function readPayload(){const raw=localStorage.getItem(CFG.storageKey);if(!raw)re
 function stableString(value){if(value===null||typeof value!=='object')return JSON.stringify(value);if(Array.isArray(value))return'['+value.map(stableString).join(',')+']';return'{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stableString(value[k])).join(',')+'}'}
 async function hashPayload(value){const bytes=new TextEncoder().encode(stableString(value));const digest=await crypto.subtle.digest('SHA-256',bytes);return[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('')}
 function deriveTimestamp(obj){const candidates=[];const visit=(v,depth=0)=>{if(depth>5||v==null)return;if(Array.isArray(v)){v.slice(0,100).forEach(x=>visit(x,depth+1));return}if(typeof v==='object'){for(const[k,x]of Object.entries(v)){if(/^(updatedAt|modifiedAt|savedAt|createdAt|timestamp)$/i.test(k)&&typeof x==='string'){const t=Date.parse(x);if(Number.isFinite(t))candidates.push(t)}visit(x,depth+1)}}};visit(obj);return candidates.length?new Date(Math.max(...candidates)).toISOString():''}
-function toast(message,ms=3400){let el=document.getElementById('bgDriveToast');if(!el){el=document.createElement('div');el.id='bgDriveToast';el.className='bg-drive-toast';document.body.appendChild(el)}el.textContent=message;el.classList.add('show');clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove('show'),ms)}
 function button(){return document.querySelector('.bg-drive-btn')}
 function setStatus(state,title){const b=button();if(!b)return;b.dataset.cloudState=state;b.title=title;b.setAttribute('aria-label',title)}
 function installButton(){if(button())return;const host=document.querySelector('.header-actions')||document.querySelector('.brand')||document.body;const b=document.createElement('button');b.type='button';b.className='bg-drive-btn header-icon-btn icon-action btn';b.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" style="width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M7 18h10a4 4 0 0 0 .7-7.94A6 6 0 0 0 6.2 8.5 4.5 4.5 0 0 0 7 18Z"/><path d="M12 12v7"/><path d="m9 15 3-3 3 3"/></svg>';b.addEventListener('click',connectDrive);host.insertBefore(b,host.lastElementChild||null);setStatus(navigator.onLine?'offline':'offline','Connecter Google Drive')}
@@ -2677,10 +2744,9 @@ async function syncNow({reason='manuel'}={}){
     const localChanged=Date.parse(meta.lastLocalChange||deriveTimestamp(local)||0)||0;
     const cloudChanged=Date.parse(cloud.updatedAt||0)||0;
     const cloudAdvanced=Number(cloud.revision||0)>Number(meta.lastCloudRevision||0);
-    if(meta.dirty&&cloudAdvanced){setStatus('conflict','Conflit entre cet appareil et Google Drive');const replace=confirm(`Une sauvegarde ${CFG.appName} plus récente existe sur Google Drive, mais cet appareil contient aussi des modifications non envoyées.\n\nOK : utiliser la version Drive.\nAnnuler : ne rien écraser pour le moment.`);if(replace)await importCloud(cloud);else toast('Conflit conservé : aucune version n’a été écrasée.',5000);return}
+    if(meta.dirty&&cloudAdvanced){setStatus('conflict','Conflit entre cet appareil et Google Drive');const replace=confirm(`Une sauvegarde ${CFG.appName} plus récente existe sur Google Drive, mais cet appareil contient aussi des modifications non envoyées.\n\nOK : utiliser la version Drive (vos modifications locales seront d’abord sauvegardées dans « Restaurer la dernière sauvegarde »).\nAnnuler : ne rien écraser pour le moment.`);if(replace){try{originalSetItem.call(localStorage,'memoire-famille-backup',JSON.stringify(local))}catch(e){console.error('Sauvegarde locale avant conflit impossible',e)}await importCloud(cloud)}else toast('Conflit conservé : aucune version n’a été écrasée.',5000);return}
     if(!meta.dirty&&cloudChanged>=localChanged){await importCloud(cloud);return}
     if(meta.dirty||localChanged>cloudChanged){await uploadLocal(cloud);return}
-    await importCloud(cloud);
   }catch(error){console.error('Synchronisation Drive',error);setStatus(navigator.onLine?'error':'offline',navigator.onLine?'Erreur Drive — cliquer pour reconnecter':'Hors connexion');toast(`Synchronisation impossible : ${error.message}`,5000)}finally{syncing=false}
 }
 function markDirty(){if(applyingCloud)return;writeMeta({dirty:true,lastLocalChange:nowIso()});setStatus(accessToken?'busy':'offline',accessToken?'Modifications en attente d’envoi':'Drive non connecté — modifications conservées localement');clearTimeout(changeTimer);changeTimer=setTimeout(()=>syncNow({reason:'modification'}),5000)}

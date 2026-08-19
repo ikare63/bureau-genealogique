@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Pistoria — corrections du 16 août 2026 (audit complet : 1 Critique, 1 Important, 4 Moyen) -->
 <html lang="fr">
 <head>
 <meta charset="utf-8">
@@ -18,6 +19,12 @@ html[data-theme="dark"]{
   --shadow:0 10px 30px rgba(0,0,0,.28)
 }
 *{box-sizing:border-box}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:9999;
+  background:var(--panel);color:var(--text);border:1px solid var(--line);
+  padding:11px 18px;border-radius:12px;box-shadow:var(--shadow);
+  font:600 14px/1.4 system-ui,sans-serif;max-width:min(92vw,560px);text-align:center;
+  opacity:0;pointer-events:none;transition:opacity .2s ease}
+.toast.show{opacity:1}
 html{scroll-behavior:smooth}
 body{margin:0;font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
 button,input,select,textarea{font:inherit}
@@ -422,6 +429,7 @@ header.suite-header > .suite-tabs button.active{
 </style>
 </head>
 <body>
+<div class="toast" id="toast"></div>
 <header class="suite-header">
   <div class="topbar">
     <div class="brand">
@@ -444,6 +452,7 @@ header.suite-header > .suite-tabs button.active{
 
 <main id="app"></main>
 <input id="importFile" type="file" accept="application/json,.json" hidden>
+<input id="arborisUpdateFile" type="file" accept="application/json,.json" hidden>
 
 <div id="modalRoot"></div>
 
@@ -494,7 +503,7 @@ const fmtDate=v=>{
   return Number.isNaN(d.getTime())?String(v):new Intl.DateTimeFormat('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric'}).format(d)
 };
 
-const defaultData={"version":"3.0.0","schema":"pistoria-private-v3","privacy":{"containsPrivateGenealogyData":false,"intendedForLocalImportOnly":true,"embeddedInHtml":false},"source":{"application":"Arboris","file":"","scope":"Aucune donnée intégrée au HTML"},"investigations":[],"audit":{},"comparisons":[],"repositories":[],"settings":{"theme":"light","dateDisplay":"dd/mm/yyyy","maxWorkingAge":100},"evidenceMemory":{"people":{},"families":[]},"genealogy":{"people":[],"families":[],"sources":[],"places":[],"relations":[]},"proofGraph":{"claims":[],"sources":[],"links":[]},"anomalies":[],"researchQueue":[]};
+const defaultData={"version":"5.0.0","schema":"pistoria-private-v5","privacy":{"containsPrivateGenealogyData":false,"intendedForLocalImportOnly":true,"embeddedInHtml":false},"scope":{"mode":"sosa-only","label":"Ancêtres directs uniquement","investigateDirectAncestorsOnly":true,"investigateCollateralRelatives":false,"investigateNonSosaSpouses":false,"relativesMayBeUsedAsEvidenceSources":true,"note":"Les actes des enfants, conjoints ou collatéraux peuvent servir de preuves, mais aucune enquête autonome n'est créée pour eux."},"source":{"application":"Arboris","file":""},"investigations":[],"audit":{},"comparisons":[],"repositories":[],"settings":{"theme":"light","dateDisplay":"dd/mm/yyyy","maxWorkingAge":100},"evidenceMemory":{"people":{},"families":[]},"genealogy":{"people":[],"families":[],"sources":[],"places":[],"relations":[]},"proofGraph":{"claims":[],"sources":[],"links":[]},"anomalies":[],"researchQueue":[],"communeHistory":[],"ruleEngine":{"version":"2.0.0","recalculateOn":["import","journal-save","result-save","coverage-save","census-import"],"principles":["Journal structuré transformé en faits","Plan recalculé selon les preuves et les échecs","Recensements Arboris utilisés comme bornes et domiciles","Contradictions conservées jusqu'à résolution","Pistes classées par rendement informationnel","Sources conditionnées par période, sexe, lieu et disponibilité","Enquête limitée aux Sosa, collatéraux utilisés seulement comme indices"]}};
 
 
 const OFFICIAL_LOCAL_REPOSITORIES=[
@@ -671,6 +680,8 @@ function applyRepositoryEnhancements(){
 }
 
 let data;
+let modalReturnFocus=null;
+const FOCUSABLE_SEL='a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
 let activeTab='dashboard';
 const PISTORIA_EXPORT_COUNT_KEY='pistoria_resolved_since_export';
@@ -1768,7 +1779,7 @@ function republicanToGregorian(day,month,year){
   const monthIndex=months.findIndex(m=>m.toLowerCase()===String(month||'').trim().toLowerCase());
   if(monthIndex<0||year<1||day<1)return null;
   const epoch=new Date('1792-09-22T12:00:00');
-  const days=(year-1)*365+Math.floor((year-1)/4)+monthIndex*30+(day-1);
+  const days=(year-1)*365+Math.floor((year+1)/4)+monthIndex*30+(day-1);
   const result=new Date(epoch);result.setDate(result.getDate()+days);
   return `${result.getFullYear()}-${String(result.getMonth()+1).padStart(2,'0')}-${String(result.getDate()).padStart(2,'0')}`;
 }
@@ -1976,16 +1987,21 @@ function compareHomonyms(){
 
 function renderSettings(){
   const privacyNotice=`<div class="notice" style="margin-bottom:14px"><strong>Confidentialité :</strong> les données importées sont stockées uniquement dans le localStorage de ce navigateur, sous une forme allégée. Elles ne sont pas incluses dans le fichier HTML publié.</div>`;
+  let syncBackup=null;
+  try{syncBackup=JSON.parse(storageGet(ARBORIS_SYNC_BACKUP_KEY)||'null');}catch(e){}
+  const undoBanner=syncBackup&&syncBackup.snapshot?`<div class="notice warn" style="margin-bottom:14px"><strong>Dernière synchronisation Arboris : ${esc(new Date(syncBackup.takenAt).toLocaleString('fr-FR'))}.</strong> <button class="btn" data-undo-arboris-sync>Annuler cette synchronisation</button></div>`:'';
 
-  return `${privacyNotice}${section('Réglages','Sauvegarde et entretien de Pistoria')}
+  return `${privacyNotice}${undoBanner}${section('Réglages','Sauvegarde et entretien de Pistoria')}
   <div class="grid two">
     <div class="card"><h3>Sauvegarder les données</h3><p>Exportez toutes les enquêtes, hypothèses, résultats et comparaisons dans un fichier JSON.</p><button class="btn primary" data-action="export">Exporter la sauvegarde</button></div>
-    <div class="card"><h3>Restaurer une sauvegarde</h3><p>Importez une sauvegarde Pistoria précédemment exportée.</p><button class="btn" data-action="import">Importer un fichier</button></div>
+    <div class="card"><h3>Restaurer une sauvegarde</h3><p>Importez une sauvegarde Pistoria précédemment exportée — remplace l’intégralité des données actuelles.</p><button class="btn" data-action="import">Importer un fichier</button></div>
+    <div class="card"><h3>Mettre à jour depuis Arboris</h3><p>Importez un export Arboris standard pour créer les enquêtes des nouveaux Sosa et actualiser les données factuelles des enquêtes existantes — sans jamais toucher à vos étapes, statuts, résultats, notes ou journaux de recherche.</p><button class="btn" data-action="arboris-sync">Mettre à jour depuis Arboris</button></div>
     <div class="card"><h3>Données de démonstration</h3><p>Recharge l’exemple fourni avec l’application.</p><button class="btn" data-reset-demo>Recharger l’exemple</button></div>
     <div class="card"><h3>Effacer les données</h3><p>Supprime définitivement les données enregistrées dans ce navigateur.</p><button class="btn danger" data-clear-data>Tout effacer</button></div>
   </div>`;
 }
 function openModal(title,body){
+  modalReturnFocus=document.activeElement;
   document.body.classList.add('modal-open');
   document.querySelector('#modalRoot').innerHTML=`<div class="modal-backdrop" data-close-modal><div class="modal" role="dialog" aria-modal="true" aria-label="${esc(title)}" onclick="event.stopPropagation()"><div class="modal-head"><h2>${esc(title)}</h2><button class="icon-btn" type="button" aria-label="Fermer" data-close-modal>×</button></div><div class="modal-body">${body}</div></div></div>`;
   const backdrop=document.querySelector('.modal-backdrop');
@@ -2010,11 +2026,15 @@ function openModal(title,body){
   document.querySelectorAll('[data-open-investigation-journal]').forEach(b=>b.onclick=()=>openInvestigationJournal(b.dataset.openInvestigationJournal));
   const formCalcBtn=document.querySelector('#runFormCalculator');if(formCalcBtn)formCalcBtn.onclick=runFormCalculator;
   const copyCalcBtn=document.querySelector('#copyCalcToNote');if(copyCalcBtn)copyCalcBtn.onclick=copyFormCalculationToNote;
+  const focusTarget=document.querySelector('.modal-body')?.querySelector(FOCUSABLE_SEL)||document.querySelector('[data-close-modal]');
+  focusTarget?.focus({preventScroll:true});
 }
 
 function closeModal(){
   document.querySelector('#modalRoot').innerHTML='';
   document.body.classList.remove('modal-open');
+  const restore=modalReturnFocus;modalReturnFocus=null;
+  if(restore&&document.contains(restore)){try{restore.focus({preventScroll:true})}catch(e){}}
 }
 
 function investigationForm(inv={}){
@@ -2980,6 +3000,13 @@ function bindView(){
     if(button.closest('.suite-header'))return;
     button.onclick=exportData;
   });
+  document.querySelectorAll('[data-action="arboris-sync"]').forEach(button=>{
+    button.onclick=openArborisSyncPicker;
+  });
+  document.querySelector('#arborisUpdateFile')?.addEventListener('change',handleArborisSyncFile);
+  document.querySelectorAll('[data-undo-arboris-sync]').forEach(button=>{
+    button.onclick=()=>{if(confirm('Annuler la dernière synchronisation Arboris ? Les enquêtes reviendront exactement à leur état précédent.'))undoLastArborisSync();};
+  });
   document.querySelectorAll('[data-analyse-investigation]').forEach(b=>b.onclick=()=>openAnalysis(b.dataset.analyseInvestigation));
   const conceptionBtn=document.querySelector('#runConceptionCalc');if(conceptionBtn)conceptionBtn.onclick=calculateConception;
   const marriageEstimateBtn=document.querySelector('#runMarriageEstimate');if(marriageEstimateBtn)marriageEstimateBtn.onclick=calculateMarriageEstimate;
@@ -3031,7 +3058,7 @@ function bindView(){
   document.querySelectorAll('[data-new-comparison]').forEach(b=>b.onclick=()=>openModal('Nouvelle comparaison',`<form id="comparisonForm"><div class="field"><label>Titre</label><input name="title" required placeholder="Ex. Ancienne sauvegarde / arbre du cousin"></div><div class="field"><label>Résumé</label><textarea name="summary"></textarea></div><div class="field"><label>Différences, une par ligne</label><textarea name="differences" placeholder="Naissance : 12 avril 1948 | 11 avril 1948"></textarea></div><div class="field"><label>Rattacher à une enquête</label><select name="investigationId"><option value="">Aucune</option>${data.investigations.map(i=>`<option value="${i.id}">${esc(i.title)}</option>`).join('')}</select></div><div class="button-row"><button class="btn primary">Enregistrer</button></div></form>`));
   document.querySelectorAll('[data-open-comparison]').forEach(b=>b.onclick=()=>{const c=data.comparisons.find(x=>x.id===b.dataset.openComparison);openModal(c.title,`<p>${esc(c.summary||'')}</p><table class="compare-table"><thead><tr><th>Différences relevées</th></tr></thead><tbody>${(c.differences||[]).map(d=>`<tr><td>${esc(d)}</td></tr>`).join('')}</tbody></table>${c.investigationId?`<p class="notice">Cette comparaison alimente l’enquête : ${esc(getInvestigation(c.investigationId)?.title||'')}</p>`:''}`)});
   document.querySelectorAll('[data-new-repository]').forEach(b=>b.onclick=()=>openModal('Ajouter un dépôt',`<form id="repositoryForm"><div class="form-grid"><div class="field"><label>Nom</label><input name="name" required></div><div class="field"><label>Type</label><input name="type" placeholder="Archives départementales, mairie…"></div><div class="field" style="grid-column:1/-1"><label>Adresse web</label><input name="url" type="url"></div><div class="field" style="grid-column:1/-1"><label>Notes</label><textarea name="notes"></textarea></div></div><div class="button-row"><button class="btn primary">Ajouter</button></div></form>`));
-  document.querySelectorAll('[data-delete-repository]').forEach(b=>b.onclick=()=>{data.repositories=data.repositories.filter(x=>x.id!==b.dataset.deleteRepository);saveData()});
+  document.querySelectorAll('[data-delete-repository]').forEach(b=>b.onclick=()=>{const rep=data.repositories.find(x=>x.id===b.dataset.deleteRepository);if(!confirm(`Supprimer définitivement le dépôt « ${rep?.name||''} » ?`))return;data.repositories=data.repositories.filter(x=>x.id!==b.dataset.deleteRepository);saveData()});
   document.querySelectorAll('[data-reset-demo]').forEach(b=>b.onclick=()=>{if(confirm('Recharger les données de démonstration ?')){data=cloneData(defaultData);saveData()}});
   document.querySelectorAll('[data-clear-data]').forEach(b=>b.onclick=()=>{if(confirm('Effacer toutes les données Pistoria ?')){data={version:'1.0.0',investigations:[],comparisons:[],repositories:[],settings:{}};saveData()}});
   bindForms();
@@ -3672,6 +3699,227 @@ function normalizePistoriaData(payload){
   return normalized;
 }
 
+const ARBORIS_SYNC_BACKUP_KEY='pistoria_arboris_sync_backup';
+const ARBORIS_SYNC_LOG_KEY='pistoria_arboris_sync_log';
+
+function arborisSyncNorm(s){
+  return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+}
+function arborisSyncLevenshtein(a,b){
+  a=a||'';b=b||'';
+  const m=[];
+  for(let i=0;i<=a.length;i++)m[i]=[i];
+  for(let j=0;j<=b.length;j++)m[0][j]=j;
+  for(let i=1;i<=a.length;i++)for(let j=1;j<=b.length;j++){
+    m[i][j]=a[i-1]===b[j-1]?m[i-1][j-1]:1+Math.min(m[i-1][j-1],m[i][j-1],m[i-1][j]);
+  }
+  return m[a.length][b.length];
+}
+function extractArborisSnapshot(person){
+  return{
+    firstNames:person.firstNames||'',
+    lastName:person.lastName||'',
+    sex:person.sex||'',
+    birthDate:person.birth?.date||'',
+    birthPlace:person.birth?.commune||person.birth?.place||'',
+    deathDate:person.death?.date||'',
+    deathPlace:person.death?.commune||person.death?.place||'',
+    parentFamilyId:person.parentFamilyId||''
+  };
+}
+function arborisSnapshotsEqual(a,b){
+  if(!a||!b)return false;
+  return['firstNames','lastName','sex','birthDate','birthPlace','deathDate','deathPlace','parentFamilyId']
+    .every(k=>(a[k]||'')===(b[k]||''));
+}
+function arborisSyncYearFrom(text){
+  const m=String(text||'').match(/\b(1[5-9]\d{2}|20\d{2})\b/);
+  return m?Number(m[1]):null;
+}
+/**
+ * Vérifie que le Sosa correspond toujours à la même personne avant toute mise à jour.
+ * Retourne une chaîne expliquant le conflit, ou '' si l'identité est cohérente
+ * (ou si les données disponibles ne permettent aucune comparaison, auquel cas
+ * on laisse passer plutôt que de bloquer sans preuve).
+ */
+function investigationIdentityConflict(inv,person){
+  const newLast=arborisSyncNorm(person.lastName);
+  const priorSnapshot=inv.arborisSync?.snapshot;
+  const priorLast=arborisSyncNorm(priorSnapshot?priorSnapshot.lastName:(inv.person||'').split(' ').slice(-1)[0]);
+  if(priorLast&&newLast){
+    const closeEnough=priorLast===newLast||arborisSyncLevenshtein(priorLast,newLast)<=2;
+    if(!closeEnough){
+      return`Nom de famille très différent de celui déjà enregistré : « ${priorSnapshot?priorSnapshot.lastName:inv.person} » vs « ${person.lastName} ».`;
+    }
+  }
+  const priorBirthYear=priorSnapshot?arborisSyncYearFrom(priorSnapshot.birthDate):arborisSyncYearFrom(knownFact(inv,'Naissance'));
+  const newBirthYear=arborisSyncYearFrom(person.birth?.date);
+  if(priorBirthYear&&newBirthYear&&Math.abs(priorBirthYear-newBirthYear)>2){
+    return`Année de naissance très différente de celle déjà enregistrée : ${priorBirthYear} vs ${newBirthYear}.`;
+  }
+  return'';
+}
+function buildStarterInvestigation(sosa,person){
+  const name=`${person.firstNames||''} ${person.lastName||''}`.trim()||'(nom inconnu)';
+  const snapshot=extractArborisSnapshot(person);
+  const knownLines=[];
+  if(snapshot.birthDate)knownLines.push(`Naissance : ${fmtDate(snapshot.birthDate)}${snapshot.birthPlace?` à ${snapshot.birthPlace}`:''}`);
+  if(snapshot.deathDate)knownLines.push(`Décès : ${fmtDate(snapshot.deathDate)}${snapshot.deathPlace?` à ${snapshot.deathPlace}`:''}`);
+  const inv={
+    id:`investigation_sosa_${sosa}`,
+    title:`Enquête — Sosa ${sosa} · ${name}`,
+    person:name,
+    personId:person.id||'',
+    sosa,
+    kind:'long',
+    objective:`Compléter les champs encore manquants de la fiche de ${name} dans Arboris.`,
+    known:knownLines.join('\n'),
+    missingSummary:[],
+    status:'active',
+    priority:'normal',
+    priorityRank:sosa,
+    createdAt:today(),
+    steps:[buildGeneanetStep({person:name},null)],
+    logs:[],
+    strategyNote:'',
+    calculationAdvice:'',
+    scope:'sosa-only',
+    subjectType:'direct-ancestor',
+    hypotheses:[],
+    censusEvidence:[],
+    identityVariants:[],
+    coverageMatrix:[],
+    contradictions:[],
+    identityCandidates:[],
+    witnessNetwork:[],
+    revisitQueue:[],
+    sourceAvailability:[],
+    proofConclusion:{},
+    researchMetrics:{},
+    structuredTimeline:[],
+    structuredClues:[],
+    ruleEngine:{},
+    arborisSync:{lastSyncedAt:new Date().toISOString(),snapshot,missing:false,missingSince:'',identityConflict:false,conflictNote:''}
+  };
+  return inv;
+}
+/**
+ * Calcule un aperçu de ce que ferait une synchronisation, sans rien modifier.
+ * payload = un export Arboris standard tel quel (people, families, ...).
+ */
+function computeArborisSyncPreview(payload){
+  if(!payload||!Array.isArray(payload.people)){
+    return{error:'Ce fichier ne ressemble pas à un export Arboris (aucune liste "people" trouvée).'};
+  }
+  const arborisBySosa=new Map();
+  for(const p of payload.people){
+    if(Number.isInteger(p.sosa)&&p.sosa>0)arborisBySosa.set(p.sosa,p);
+  }
+  const existingBySosa=new Map();
+  for(const inv of data.investigations||[]){
+    if(Number.isInteger(inv.sosa))existingBySosa.set(inv.sosa,inv);
+  }
+
+  const newSosa=[],updatedSosa=[],missingSosa=[],conflicts=[];
+  let unchangedCount=0;
+
+  for(const[sosa,inv]of existingBySosa){
+    const person=arborisBySosa.get(sosa);
+    if(!person){
+      missingSosa.push({sosa,inv});
+      continue;
+    }
+    const conflictReason=investigationIdentityConflict(inv,person);
+    if(conflictReason){
+      conflicts.push({sosa,inv,person,reason:conflictReason});
+      continue;
+    }
+    const newSnapshot=extractArborisSnapshot(person);
+    if(arborisSnapshotsEqual(inv.arborisSync?.snapshot,newSnapshot)){
+      unchangedCount++;
+    }else{
+      updatedSosa.push({sosa,inv,person,snapshot:newSnapshot});
+    }
+  }
+  for(const[sosa,person]of arborisBySosa){
+    if(!existingBySosa.has(sosa))newSosa.push({sosa,person});
+  }
+
+  return{newSosa,updatedSosa,missingSosa,conflicts,unchangedCount,sourceCount:arborisBySosa.size};
+}
+
+/**
+ * Applique un aperçu déjà calculé. Ne touche jamais aux enquêtes en conflit
+ * ou absentes autrement que pour les signaler. Ne supprime jamais d'enquête.
+ */
+function applyArborisSyncPreview(preview,sourceFileName){
+  const backupPayload={
+    takenAt:new Date().toISOString(),
+    sourceFileName:sourceFileName||'',
+    snapshot:cloneData(data)
+  };
+  try{storageSet(ARBORIS_SYNC_BACKUP_KEY,JSON.stringify(backupPayload));}
+  catch(e){console.error('Sauvegarde avant synchronisation impossible',e);}
+
+  for(const{inv,person,snapshot}of preview.updatedSosa){
+    inv.arborisSync=inv.arborisSync||{};
+    inv.arborisSync.snapshot=snapshot;
+    inv.arborisSync.lastSyncedAt=new Date().toISOString();
+    inv.arborisSync.missing=false;
+    inv.arborisSync.missingSince='';
+    inv.personId=person.id||inv.personId;
+    inv.person=`${person.firstNames||''} ${person.lastName||''}`.trim()||inv.person;
+    inv.title=`Enquête — Sosa ${inv.sosa} · ${inv.person}`;
+  }
+  for(const{inv}of preview.missingSosa){
+    inv.arborisSync=inv.arborisSync||{};
+    if(!inv.arborisSync.missing){
+      inv.arborisSync.missing=true;
+      inv.arborisSync.missingSince=today();
+    }
+  }
+  for(const{inv,reason}of preview.conflicts){
+    inv.arborisSync=inv.arborisSync||{};
+    inv.arborisSync.identityConflict=true;
+    inv.arborisSync.conflictNote=reason;
+  }
+  const createdInvestigations=[];
+  for(const{sosa,person}of preview.newSosa){
+    const inv=buildStarterInvestigation(sosa,person);
+    data.investigations.push(inv);
+    createdInvestigations.push(inv.id);
+  }
+
+  const logEntry={
+    at:new Date().toISOString(),
+    sourceFileName:sourceFileName||'',
+    created:createdInvestigations.length,
+    updated:preview.updatedSosa.length,
+    missing:preview.missingSosa.length,
+    conflicts:preview.conflicts.length,
+    unchanged:preview.unchangedCount
+  };
+  let log=[];
+  try{log=JSON.parse(storageGet(ARBORIS_SYNC_LOG_KEY)||'[]');}catch(e){log=[];}
+  if(!Array.isArray(log))log=[];
+  log.push(logEntry);
+  storageSet(ARBORIS_SYNC_LOG_KEY,JSON.stringify(log.slice(-50)));
+
+  saveData();
+  return logEntry;
+}
+function undoLastArborisSync(){
+  let backup=null;
+  try{backup=JSON.parse(storageGet(ARBORIS_SYNC_BACKUP_KEY)||'null');}catch(e){}
+  if(!backup||!backup.snapshot){
+    alert('Aucune synchronisation récente à annuler.');
+    return false;
+  }
+  data=backup.snapshot;
+  try{storageSet(ARBORIS_SYNC_BACKUP_KEY,'');}catch(e){}
+  saveData();
+  return true;
+}
 function enforceSosaOnlyScope(payload){
   if(!payload||typeof payload!=='object')return payload;
 
@@ -3849,6 +4097,57 @@ function openImportPicker(){
   input.value='';
   input.click();
 }
+function openArborisSyncPicker(){
+  const input=document.querySelector('#arborisUpdateFile');
+  if(!input){
+    alert('Le champ de mise à jour est introuvable.');
+    return;
+  }
+  input.value='';
+  input.click();
+}
+function handleArborisSyncFile(event){
+  const file=event.target.files&&event.target.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    let payload;
+    try{payload=JSON.parse(reader.result);}
+    catch(error){alert('Fichier JSON illisible : '+(error?.message||'erreur inconnue'));return;}
+    const preview=computeArborisSyncPreview(payload);
+    if(preview.error){alert(preview.error);return;}
+    showArborisSyncPreviewModal(preview,payload,file.name);
+  };
+  reader.onerror=()=>alert('Lecture du fichier impossible.');
+  reader.readAsText(file);
+}
+function showArborisSyncPreviewModal(preview,payload,fileName){
+  const conflictRows=preview.conflicts.map(c=>`<li><strong>Sosa ${c.sosa}</strong> — ${esc(c.inv.person)} : ${esc(c.reason)}</li>`).join('');
+  const missingRows=preview.missingSosa.map(m=>`<li>Sosa ${m.sosa} — ${esc(m.inv.person)}</li>`).join('');
+  const body=`
+    <p>Fichier : <strong>${esc(fileName)}</strong> — ${preview.sourceCount} personne(s) avec un numéro Sosa.</p>
+    <div class="grid two" style="margin:12px 0">
+      <div class="card"><strong>${preview.newSosa.length}</strong><div>nouveau(x) Sosa — une enquête sera créée pour chacun</div></div>
+      <div class="card"><strong>${preview.updatedSosa.length}</strong><div>Sosa à actualiser (données factuelles seulement)</div></div>
+      <div class="card"><strong>${preview.missingSosa.length}</strong><div>Sosa absent(s) du nouvel export — aucune suppression, à vérifier</div></div>
+      <div class="card"><strong>${preview.conflicts.length}</strong><div>conflit(s) d’identité — non modifié(s)</div></div>
+    </div>
+    <p class="muted">${preview.unchangedCount} enquête(s) déjà à jour, aucun changement.</p>
+    ${conflictRows?`<h3>Conflits d’identité (à vérifier manuellement, rien n’est modifié)</h3><ul>${conflictRows}</ul>`:''}
+    ${missingRows?`<h3>Sosa absents du nouvel export (enquêtes conservées, à vérifier)</h3><ul>${missingRows}</ul>`:''}
+    <p><strong>Vos étapes, statuts, résultats, notes, journaux de recherche, résolutions et comparaisons ne seront jamais modifiés par cette opération.</strong> Une sauvegarde récupérable est prise avant toute application.</p>
+    <div class="toolbar" style="margin-top:14px">
+      <button class="btn primary" id="confirmArborisSync">Appliquer la mise à jour</button>
+      <button class="btn" data-close-modal>Annuler</button>
+    </div>`;
+  openModal('Aperçu de la mise à jour depuis Arboris',body);
+  const confirmBtn=document.querySelector('#confirmArborisSync');
+  if(confirmBtn)confirmBtn.onclick=()=>{
+    const result=applyArborisSyncPreview(preview,fileName);
+    closeModal();
+    alert(`Mise à jour appliquée : ${result.created} créée(s), ${result.updated} actualisée(s), ${result.missing} absente(s) signalée(s), ${result.conflicts} conflit(s) signalé(s).`);
+  };
+}
 
 function restorePreviousImport(){
   const raw=storageGet(BACKUP_KEY);
@@ -3876,7 +4175,17 @@ document.querySelectorAll('[data-action="import"]').forEach(button=>{
 });
 document.querySelector('#importFile')?.addEventListener('change',importData);
 
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape')closeModal();
+  if(e.key==='Tab'&&document.querySelector('.modal-backdrop')){
+    const items=Array.from(document.querySelectorAll('.modal-backdrop '+FOCUSABLE_SEL));
+    if(!items.length)return;
+    const first=items[0],last=items[items.length-1];
+    if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
+    else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
+    else if(!items.includes(document.activeElement)){e.preventDefault();first.focus()}
+  }
+});
 
 /*
   Initialisation différée :
@@ -3907,8 +4216,6 @@ setTimeout(updatePistoriaExportAlert,0);
 .bg-drive-btn[data-cloud-state="error"]::after,.bg-drive-btn[data-cloud-state="conflict"]::after{background:#c7332b}
 .bg-drive-btn[data-cloud-state="offline"]::after{background:#777}
 @keyframes bgCloudPulse{50%{opacity:.35}}
-.bg-drive-toast{position:fixed;left:50%;bottom:18px;z-index:20000;transform:translateX(-50%);max-width:min(92vw,620px);padding:10px 14px;border-radius:10px;background:#111;color:#fff;font:600 14px/1.35 system-ui,sans-serif;box-shadow:0 10px 30px rgba(0,0,0,.28);display:none;text-align:center}
-.bg-drive-toast.show{display:block}
 </style>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script id="bg-drive-sync-script">
@@ -3936,7 +4243,7 @@ function readPayload(){const raw=localStorage.getItem(CFG.storageKey);if(!raw)re
 function stableString(value){if(value===null||typeof value!=='object')return JSON.stringify(value);if(Array.isArray(value))return'['+value.map(stableString).join(',')+']';return'{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stableString(value[k])).join(',')+'}'}
 async function hashPayload(value){const bytes=new TextEncoder().encode(stableString(value));const digest=await crypto.subtle.digest('SHA-256',bytes);return[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('')}
 function deriveTimestamp(obj){const candidates=[];const visit=(v,depth=0)=>{if(depth>5||v==null)return;if(Array.isArray(v)){v.slice(0,100).forEach(x=>visit(x,depth+1));return}if(typeof v==='object'){for(const[k,x]of Object.entries(v)){if(/^(updatedAt|modifiedAt|savedAt|createdAt|timestamp)$/i.test(k)&&typeof x==='string'){const t=Date.parse(x);if(Number.isFinite(t))candidates.push(t)}visit(x,depth+1)}}};visit(obj);return candidates.length?new Date(Math.max(...candidates)).toISOString():''}
-function toast(message,ms=3400){let el=document.getElementById('bgDriveToast');if(!el){el=document.createElement('div');el.id='bgDriveToast';el.className='bg-drive-toast';document.body.appendChild(el)}el.textContent=message;el.classList.add('show');clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove('show'),ms)}
+function toast(message,ms=3400){const el=document.getElementById('toast');if(!el)return;el.textContent=message;el.classList.add('show');clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove('show'),ms)}
 function button(){return document.querySelector('.bg-drive-btn')}
 function setStatus(state,title){const b=button();if(!b)return;b.dataset.cloudState=state;b.title=title;b.setAttribute('aria-label',title)}
 function installButton(){if(button())return;const host=document.querySelector('.header-actions')||document.querySelector('.brand')||document.body;const b=document.createElement('button');b.type='button';b.className='bg-drive-btn header-icon-btn icon-action btn';b.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" style="width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M7 18h10a4 4 0 0 0 .7-7.94A6 6 0 0 0 6.2 8.5 4.5 4.5 0 0 0 7 18Z"/><path d="M12 12v7"/><path d="m9 15 3-3 3 3"/></svg>';b.addEventListener('click',connectDrive);host.insertBefore(b,host.lastElementChild||null);setStatus(navigator.onLine?'offline':'offline','Connecter Google Drive')}

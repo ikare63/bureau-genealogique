@@ -1609,7 +1609,7 @@ header.suite-header > .sister-nav{
 (() => {
 'use strict';
 
-const APP_VERSION='3.5.8';
+const APP_VERSION='3.6.0';
 const LS_KEY='scriptoria-data';
 const BACKUP_KEY='scriptoria-backup';
 const DB_NAME='scriptoria-files';
@@ -1634,7 +1634,9 @@ const DEFAULT_STATE=()=>({
 let state=loadState();
 let db=null;
 let saveTimer=null;
-let currentTab=state.settings.lastTab==='pages'?'dashboard':(state.settings.lastTab||'dashboard');
+let currentTab=state.settings.lastTab==='pages'?'registers':(state.settings.lastTab||'dashboard');
+let modalReturnFocus=null;
+const FOCUSABLE_SEL='a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),[tabindex]:not([tabindex="-1"])';
 let viewerState={scale:1,rotation:0,brightness:100,contrast:100,gray:0,invert:0,x:0,y:0};
 let currentViewerUrl=null;
 let exportInProgress=false;
@@ -1671,7 +1673,7 @@ function esc(v){return safe(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>
 function fmtDate(v){
  if(!v)return '';
  const d=new Date(v+'T00:00:00');
- if(Number.isNaN(d))return esc(v);
+ if(Number.isNaN(d.getTime()))return esc(v);
  return new Intl.DateTimeFormat('fr-FR',{day:'numeric',month:'long',year:'numeric'}).format(d);
 }
 const FIELD_LABELS={
@@ -1726,9 +1728,9 @@ function humanBytes(n){
  while(n>=1024&&i<u.length-1){n/=1024;i++}
  return `${n.toFixed(i?1:0)} ${u[i]}`;
 }
-function toast(msg){
- const el=document.getElementById('toast'); el.textContent=msg; el.classList.add('show');
- setTimeout(()=>el.classList.remove('show'),2600);
+function toast(msg,ms=2600){
+ const el=document.getElementById('toast'); if(!el)return; el.textContent=msg; el.classList.add('show');
+ clearTimeout(el._hideTimer); el._hideTimer=setTimeout(()=>el.classList.remove('show'),ms);
 }
 function indicator(text,error=false){
  const el=document.getElementById('saveIndicator');
@@ -1808,6 +1810,41 @@ function recordIncomplete(r){
  return !r.date||!r.commune||!r.pageNumber||!recordMainName(r)||recordMainName(r)==='Personne non renseignée';
 }
 function norm(s){return safe(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim()}
+const debounce=(fn,wait=200)=>{let t;return(...args)=>{clearTimeout(t);t=setTimeout(()=>fn(...args),wait)}};
+function runPeopleSearch(value){
+ const q=norm(value);
+ document.getElementById('peopleList').innerHTML=state.people.filter(p=>norm(JSON.stringify(p)).includes(q)).map(personCard).join('')||empty();
+}
+function runSurnameSearch(value){
+ const q=norm(value);
+ const host=document.getElementById('surnameList');
+ const groups=new Map();
+ for(const p of state.people){
+  const surname=splitPersonName(p.lastName,p.firstNames).lastName;
+  if(!surname||!norm(surname).includes(q))continue;
+  const key=norm(surname),item=groups.get(key)||{label:surname,people:[]};
+  item.people.push(p);groups.set(key,item);
+ }
+ const list=[...groups.values()].sort((a,b)=>a.label.localeCompare(b.label,'fr'));
+ host.innerHTML=list.map(surnameCard).join('')||empty();
+}
+function runResearchFilters(){
+ const o=formDataObject(document.getElementById('researchFilters')),arr=state.research.filter(r=>(!o.priority||r.priority===o.priority)&&(!o.status||r.status===o.status)&&(!o.q||norm(JSON.stringify(r)).includes(norm(o.q))));
+ document.getElementById('researchList').innerHTML=arr.map(researchCard).join('')||empty();
+}
+function runStatsFilters(){
+ const pos=window.scrollY;renderMain();requestAnimationFrame(()=>window.scrollTo(0,pos));
+}
+const dFilterRecords=debounce(()=>filterRecords(),200);
+const dRunPeopleSearch=debounce(runPeopleSearch,200);
+const dRunSurnameSearch=debounce(runSurnameSearch,200);
+const dRunResearchFilters=debounce(runResearchFilters,200);
+const dRunStatsFilters=debounce(runStatsFilters,200);
+const dRelationsSearchRender=debounce(()=>{
+ const i=document.getElementById('relationsSearch');const cursor=i?i.selectionStart:null;
+ renderMain();
+ setTimeout(()=>{const el=document.getElementById('relationsSearch');if(el&&cursor!=null){el.focus();el.setSelectionRange(cursor,cursor)}},0);
+},200);
 
 function firstWordGivenName(value=''){
  const tokens=safe(value).trim().split(/\s+/).filter(Boolean);
@@ -1918,14 +1955,19 @@ function setTab(tab){
  currentTab=tab;state.settings.lastTab=tab;saveState(false,false);renderNav();renderMain();
 }
 function openModal(title,html){
+ modalReturnFocus=document.activeElement;
  document.getElementById('modalTitle').textContent=title;
  document.getElementById('modalBody').innerHTML=html;
  document.getElementById('modal').classList.add('open');
+ const target=document.getElementById('modalBody').querySelector(FOCUSABLE_SEL)||document.querySelector('[data-close-modal]');
+ target?.focus({preventScroll:true});
 }
 function closeModal(){
  document.getElementById('modal').classList.remove('open');
  document.getElementById('modalBody').innerHTML='';
  if(currentViewerUrl){URL.revokeObjectURL(currentViewerUrl);currentViewerUrl=null}
+ const restore=modalReturnFocus;modalReturnFocus=null;
+ if(restore&&document.contains(restore)){try{restore.focus({preventScroll:true})}catch(e){}}
 }
 function field(name,label,value='',opts={}){
  const cls=opts.wide?'wide':opts.half?'half':opts.quarter?'quarter':'';
@@ -2225,6 +2267,7 @@ const SECTION_VIEWS={
  registers:[
   ['registers','Registres'],
   ['records','Actes'],
+  ['pages','Pages importées'],
   ['progress','Progression']
  ],
  research:[
@@ -2248,6 +2291,8 @@ const SECTION_VIEWS={
   ['surnames','Patronymes douteux'],
   ['family-proposals','Familles proposées'],
   ['relation-proposals','Relations proposées'],
+  ['merge-suggestions','Fusions suggérées'],
+  ['old-merges','Anciennes fusions automatiques'],
   ['waiting','En attente']
  ]
 };
@@ -2269,7 +2314,7 @@ function renderSectionTabs(section){
 }
 function renderRegistersHub(){
  const view=currentSectionView('registers');
- const fn={registers:renderRegisters,records:renderRecords,progress:renderRegisterProgress}[view]||renderRegisters;
+ const fn={registers:renderRegisters,records:renderRecords,pages:renderPages,progress:renderRegisterProgress}[view]||renderRegisters;
  return `${renderSectionTabs('registers')}${fn()}`;
 }
 function renderResearchHub(){
@@ -3285,7 +3330,36 @@ function renderRelationProposals(){const rows=kinshipRelationProposals();return 
 function renderSurnameReview(){const rows=surnameVariantCandidates();return `<section><h2>Patronymes douteux</h2><div class="notice warn">Ces rapprochements sont des indices, jamais des corrections automatiques.</div><div class="grid two">${rows.map(x=>`<article class="card proposal-card"><div class="split-head"><h3>${esc(x.a)} ↔ ${esc(x.b)}</h3><strong>${x.score}%</strong></div><ul class="evidence-list">${x.evidence.map(e=>`<li>${esc(e)}</li>`).join('')}</ul><div class="toolbar"><button data-action="view-surname" data-surname-key="${esc(norm(x.a))}">Voir ${esc(x.a)}</button><button data-action="view-surname" data-surname-key="${esc(norm(x.b))}">Voir ${esc(x.b)}</button></div></article>`).join('')||empty()}</div></section>`}
 function renderHomonymReview(){const all=buildAnomalyRegistry().filter(a=>['homonyms','different-parents'].includes(a.type)&&!isReviewDeferred(a.id));return `<section><h2>Homonymes</h2><div class="notice">Seuls les rapprochements soutenus par plusieurs indices sont affichés.</div>${renderReviewItems(all,'identity')}</section>`}
 function renderWaitingReview(){const deferred=new Set(reviewDeferredIds()),all=buildAnomalyRegistry().filter(a=>deferred.has(a.id));return `<section><h2>En attente</h2>${renderReviewItems(all,'waiting')}</section>`}
-function renderReviewHub(){const view=currentSectionView('review');const fn={inconsistencies:renderAnomalyRegistry,homonyms:renderHomonymReview,surnames:renderSurnameReview,'family-proposals':renderFamilyProposals,'relation-proposals':renderRelationProposals,waiting:renderWaitingReview}[view]||renderAnomalyRegistry;return `${renderSectionTabs('review')}${fn()}`}
+function renderMergeSuggestions(){
+ const rows=strongIdentityDuplicateSuggestions();
+ const backup=state.metadata&&state.metadata.lastMergeBackup;
+ const undoBanner=backup?`<div class="notice warn"><strong>Dernière fusion : ${esc(backup.sourceName)} → ${esc(backup.targetName)}.</strong> <button data-action="undo-last-merge">Annuler cette fusion</button></div>`:'';
+ return `<section><div class="review-intro"><h2>Fusions suggérées</h2><p class="muted">Ces rapprochements ne sont jamais appliqués automatiquement. Validez ou écartez chaque suggestion individuellement.</p></div>${undoBanner}<div class="grid">${rows.map(s=>`<article class="card proposal-card confidence-${s.tier}"><div class="split-head"><div><h3>${esc(s.sourceName)} ↔ ${esc(s.targetName)}</h3></div><span class="badge ${s.tier==='high'?'green':s.tier==='medium'?'warn':'danger'}">${esc(identityEvidenceTierLabel(s.tier))}</span></div><ul class="evidence-list">${s.evidence.map(k=>`<li>${esc(evidenceLabel(k))}</li>`).join('')}</ul><div class="toolbar"><button class="primary" data-action="accept-merge-suggestion" data-proposal-id="${esc(s.id)}">Fusionner</button><button data-action="reject-merge-suggestion" data-proposal-id="${esc(s.id)}">Ce sont deux personnes différentes</button><button data-action="view-person" data-id="${esc(s.sourceId)}">Voir ${esc(s.sourceName)}</button><button data-action="view-person" data-id="${esc(s.targetId)}">Voir ${esc(s.targetName)}</button></div></article>`).join('')||empty()}</div></section>`;
+}
+function oldMergeReconstructability(reasonKinds,keptPersonNow){
+ const hasConflictNote=keptPersonNow&&/divergences conservées/.test(safe(keptPersonNow.notes));
+ if(hasConflictNote)return{label:'Scission assistée envisageable',detail:'Des divergences de champs ont été explicitement conservées dans les notes de la fiche : elles indiquent quelle valeur provenait de quelle fiche d’origine.'};
+ if(reasonKinds.includes('shared-record'))return{label:'Scission non pertinente',detail:'Les deux mentions provenaient du même acte : il n’y avait pas deux identités séparées à reconstituer à l’origine.'};
+ return{label:'Scission non fiable sans retour aux actes',detail:'Aucune divergence de champ n’a été conservée : plus rien ne distingue, dans la fiche actuelle, ce qui provenait de chaque fiche d’origine. Une relecture manuelle des actes sources est nécessaire.'};
+}
+function renderOldMergesReview(){
+ const log=state.metadata?.strongIdentityCleanupLast||[];
+ const totalCount=state.metadata?.strongIdentityCleanupCount||0;
+ const olderUntraced=Math.max(0,totalCount-log.length);
+ const removedIdsAll=new Set(log.map(e=>e.removed));
+ const entries=log.map((e,idx)=>{
+  const reasonKinds=safe(e.reason).split(', ').filter(Boolean);
+  const keptNow=byId(state.people,e.kept);
+  const tier=identityEvidenceTier(reasonKinds);
+  const cascaded=removedIdsAll.has(e.kept)||!keptNow;
+  const recon=oldMergeReconstructability(reasonKinds,keptNow);
+  return{...e,idx,reasonKinds,keptNow,tier,cascaded,recon};
+ });
+ const tierOrder={low:0,medium:1,high:2};
+ entries.sort((a,b)=>tierOrder[a.tier]-tierOrder[b.tier]);
+ return `<section><div class="review-intro"><h2>Anciennes fusions automatiques</h2><p class="muted">${totalCount} fusion(s) ont été effectuées automatiquement avant la désactivation de ce mécanisme. ${log.length} sont encore journalisées en détail ci-dessous${olderUntraced?` ; les ${olderUntraced} plus anciennes ne le sont plus (compteur global uniquement)`:''}. Cette liste est fournie pour relecture manuelle — rien n’est modifié automatiquement ici.</p></div><div class="grid">${entries.map(e=>`<article class="card proposal-card confidence-${e.tier}"><div class="split-head"><div><h3>${esc(e.name)}</h3><div class="small muted">Conservé : ${e.keptNow?personNameHTML(e.keptNow):'fiche depuis réabsorbée dans une autre fusion'} · Supprimé : ${esc(e.removed)}</div></div><span class="badge ${e.tier==='high'?'green':e.tier==='medium'?'warn':'danger'}">${esc(identityEvidenceTierLabel(e.tier))}</span></div><ul class="evidence-list">${e.reasonKinds.map(k=>`<li>${esc(evidenceLabel(k))}</li>`).join('')}</ul><div class="kinship-rule"><strong>${esc(e.recon.label)}</strong> — ${esc(e.recon.detail)}</div>${e.cascaded?'<div class="notice warn">Cette fiche a depuis été impliquée dans une autre fusion : la piste est plus complexe à remonter.</div>':''}<div class="toolbar">${e.keptNow?`<button data-action="view-person" data-id="${esc(e.kept)}">Voir la fiche actuelle</button>`:''}</div></article>`).join('')||empty()}</div></section>`;
+}
+function renderReviewHub(){const view=currentSectionView('review');const fn={inconsistencies:renderAnomalyRegistry,homonyms:renderHomonymReview,surnames:renderSurnameReview,'family-proposals':renderFamilyProposals,'relation-proposals':renderRelationProposals,'merge-suggestions':renderMergeSuggestions,'old-merges':renderOldMergesReview,waiting:renderWaitingReview}[view]||renderAnomalyRegistry;return `${renderSectionTabs('review')}${fn()}`}
 function roleSex(role='',fallback=''){
  const r=norm(role);
  if(/^(pere|epoux|parrain|fils|frere|oncle|veuf|homme)$/.test(r))return'M';
@@ -3778,9 +3852,6 @@ function registerPlacesFromRecord(r){
  const f=r.fields||{};const values=[r.commune,r.parish,r.locality,r.address,f.familyResidence,f.parentsHome,f.husbandParentsHome,f.wifeParentsHome,f.husbandHome,f.wifeHome,f.marriagePlace,f.birthPlace,f.deathPlace];
  for(const group of ['godparents','burialWitnesses','deathDeclarants','witnessesDetailed'])for(const item of f[group]||[])values.push(item.home);
  values.forEach(v=>ensurePlaceExists(v));
-}
-function celebrantField(name,value=''){
- return field(name,'Officiant ou célébrant',value,{type:'select',half:true,options:[['','— Choisir —'],['Gachet — vicaire','Gachet — vicaire'],['Lespinasse — curé','Lespinasse — curé']]});
 }
 function enhanceProfessionFields(form){
  if(!form)return;
@@ -6533,6 +6604,25 @@ function peopleForPlace(place){
   });
  });
 }
+function historicalAffiliationItem(item={},index=0){
+ return `<div class="bann-item">
+  <div class="bann-head"><strong>Rattachement ${index+1}</strong><button type="button" data-action="remove-place-affiliation">×</button></div>
+  <div class="form-grid">
+   ${field('_affType','Type',item.type||'paroisse',{type:'select',half:true,options:['paroisse','quartier','communauté','juridiction','élection','département','district','canton','autre']})}
+   ${field('_affValue','Nom',item.value||'',{half:true})}
+   ${field('_affFrom','Valide à partir de',item.validFrom||'',{half:true})}
+   ${field('_affTo','Valide jusqu’à',item.validTo||'',{half:true})}
+  </div>
+ </div>`;
+}
+function readHistoricalAffiliations(form){
+ return [...form.querySelectorAll('[data-affiliations-list] .bann-item')].map(row=>({
+  type:row.querySelector('[name="_affType"]')?.value||'',
+  value:row.querySelector('[name="_affValue"]')?.value.trim()||'',
+  validFrom:row.querySelector('[name="_affFrom"]')?.value.trim()||'',
+  validTo:row.querySelector('[name="_affTo"]')?.value.trim()||''
+ })).filter(x=>x.value);
+}
 function viewPlace(id){
  const p=byId(state.places,id);if(!p)return;
  const acts=recordsForPlace(p),people=peopleForPlace(p);
@@ -6548,7 +6638,8 @@ function viewPlace(id){
    <p><strong>Commune :</strong> ${esc(p.commune||'—')}</p>
    <p><strong>Variante ancienne :</strong> ${esc(p.oldVariant||'—')}</p>
    <p><strong>Notes :</strong> ${esc(p.historicalNotes||'—')}</p>
-  </div></details>`);
+  </div></details>${(p.historicalAffiliations||[]).length?`
+  <details open><summary>Subdivisions et rattachements historiques</summary><div class="grid two">${p.historicalAffiliations.map(x=>`<div class="card"><strong>${esc(x.type)}</strong> — ${esc(x.value)}${x.validFrom||x.validTo?`<div class="small muted">${esc(x.validFrom||'?')} → ${esc(x.validTo||'aujourd’hui')}</div>`:''}</div>`).join('')}</div></details>`:''}`);
 }
 
 function renderPlaces(){
@@ -6572,6 +6663,10 @@ function openPlaceForm(p={}){
   ${field('country','Pays',p.country||'France')}
   ${field('address','Adresse',p.address||'',{wide:true})}
   ${field('historicalNotes','Notes historiques',p.historicalNotes||'',{type:'textarea',wide:true})}
+ `,false,true)}
+ ${formAccordion('Subdivisions et rattachements historiques',`
+  <p class="small muted">Un même lieu peut avoir eu une paroisse, un quartier ou une juridiction distincts de la commune actuelle, parfois avec des dates de validité (ex. Quartier du Forez, rattaché à l’Élection de Roanne jusqu’en 1790).</p>
+  <div class="field wide"><div data-affiliations-list>${(p.historicalAffiliations||[]).map((x,i)=>historicalAffiliationItem(x,i)).join('')}</div><button type="button" class="repeatable-add" data-action="add-place-affiliation">Ajouter un rattachement</button></div>
  `,false,true)}
  </div><div class="toolbar"><button class="primary" type="submit">Enregistrer</button><button type="button" data-close-modal>Annuler</button></div></form>`);
 }
@@ -6646,12 +6741,6 @@ function splitPersonNameFromFull(full){
  return {firstNames:bits.slice(0,idx).join(' '), lastName:bits.slice(idx).join(' ')};
 }
 function shorten(s,n){s=String(s||'');return s.length>n?s.slice(0,n-1)+'…':s}
-function siblingsOf(person){
- if(!person)return[];
- const parentIds=new Set(person.parentIds||[]);
- if(!parentIds.size)return[];
- return state.people.filter(p=>p.id!==person.id&&(p.parentIds||[]).some(id=>parentIds.has(id)));
-}
 function siblingsOf(person){
  if(!person)return[];
  const parents=new Set(person.parentIds||[]);
@@ -6817,10 +6906,6 @@ function openResearchForm(r={}){
  </div><div class="toolbar"><button class="primary" type="submit">Enregistrer</button><button type="button" data-close-modal>Annuler</button></div></form>`);
 }
 
-function recordYear(r){
- const y=safe(r.date||r.year).match(/\b(1[5-9]\d{2}|20\d{2})\b/);
- return y?y[1]:'';
-}
 function identityKeyFromName(name){
  const cleaned=cleanHistoricalPersonName(name);
  if(!cleaned)return '';
@@ -7673,6 +7758,20 @@ function mergePersonStart(id){
   <form id="manualMergePerson" data-source="${esc(id)}"><div class="form-grid">${field('targetId','Fiche à conserver','',{type:'select',wide:true,required:true,options:[['','— Sélectionner —'],...all.map(x=>[x.id,personName(x)])]})}</div><div class="toolbar"><button class="primary" type="submit">Examiner</button></div></form>`);
 }
 
+document.addEventListener('keydown',event=>{
+ if(event.key==='Escape'&&document.getElementById('modal')?.classList.contains('open')){
+  event.preventDefault();closeModal();
+ }
+ if(event.key==='Tab'&&document.getElementById('modal')?.classList.contains('open')){
+  const items=Array.from(document.getElementById('modal').querySelectorAll(FOCUSABLE_SEL));
+  if(!items.length)return;
+  const first=items[0],last=items[items.length-1];
+  if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus()}
+  else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}
+  else if(!items.includes(document.activeElement)){event.preventDefault();first.focus()}
+ }
+});
+
 document.addEventListener('click',async e=>{
  const tab=e.target.closest('[data-tab]');if(tab){setTab(tab.dataset.tab);return}
  if(e.target.closest('[data-close-modal]')){closeModal();return}
@@ -7681,6 +7780,9 @@ document.addEventListener('click',async e=>{
   if(action==='section-view'){setSectionView(a.dataset.section,a.dataset.view);return;}
   if(action==='accept-family-proposal'){acceptFamilyProposal(a.dataset.proposalId);return;}
   if(action==='accept-kinship-proposal'){acceptKinshipProposal(a.dataset.proposalId);return;}
+  if(action==='accept-merge-suggestion'){acceptMergeSuggestion(a.dataset.proposalId);return;}
+  if(action==='reject-merge-suggestion'){rejectMergeSuggestion(a.dataset.proposalId);return;}
+  if(action==='undo-last-merge'){undoLastMerge();return;}
   if(action==='open-family-proposals'){currentTab='review';state.settings.sectionViews=state.settings.sectionViews||{};state.settings.sectionViews.review='family-proposals';saveState(true,false);renderNav();renderMain();return;}
   if(action==='view-profession'){openProfessionDetail(a.dataset.name);return;}
   if(action==='view-clergy'){openClergyDetail(a.dataset.name);return;}
@@ -7909,6 +8011,14 @@ document.addEventListener('click',async e=>{
    const item=a.closest('.bann-item'),host=item?.parentElement;
    if(item&&host){if(host.children.length>1)item.remove();else item.querySelectorAll('input').forEach(x=>x.value='')}
   }
+  if(action==='add-place-affiliation'){
+   const host=a.closest('.field')?.querySelector('[data-affiliations-list]');
+   if(host){const wrap=document.createElement('div');wrap.innerHTML=historicalAffiliationItem({},host.children.length);host.appendChild(wrap.firstElementChild)}
+  }
+  if(action==='remove-place-affiliation'){
+   const item=a.closest('.bann-item'),host=item?.parentElement;
+   if(item&&host)item.remove();
+  }
   if(action==='add-person-repeatable'){
    const host=document.querySelector(`[data-person-repeatable="${a.dataset.name}"]`);
    if(host){
@@ -7973,9 +8083,7 @@ function updateDerivedRegisterFields(select){
 document.addEventListener('input',e=>{
  if(e.target?.id==='relationsSearch'){
   state.settings.relationsSearch=e.target.value;
-  const cursor=e.target.selectionStart;
-  renderMain();
-  setTimeout(()=>{const i=document.getElementById('relationsSearch');if(i){i.focus();i.setSelectionRange(cursor,cursor)}},0);
+  dRelationsSearchRender();
   return;
  }
 
@@ -8049,28 +8157,16 @@ document.addEventListener('change',e=>{
  }
 });
 document.addEventListener('input',e=>{
- if(e.target.closest('#recordFilters'))filterRecords();
- if(e.target.name==='peopleSearch'){const q=norm(e.target.value);document.getElementById('peopleList').innerHTML=state.people.filter(p=>norm(JSON.stringify(p)).includes(q)).map(personCard).join('')||empty()}
- if(e.target.name==='surnameSearch'){
-  const q=norm(e.target.value);
-  const host=document.getElementById('surnameList');
-  const groups=new Map();
-  for(const p of state.people){
-   const surname=splitPersonName(p.lastName,p.firstNames).lastName;
-   if(!surname||!norm(surname).includes(q))continue;
-   const key=norm(surname),item=groups.get(key)||{label:surname,people:[]};
-   item.people.push(p);groups.set(key,item);
-  }
-  const list=[...groups.values()].sort((a,b)=>a.label.localeCompare(b.label,'fr'));
-  host.innerHTML=list.map(surnameCard).join('')||empty();
- }
- if(e.target.closest('#researchFilters')){const o=formDataObject(document.getElementById('researchFilters')),arr=state.research.filter(r=>(!o.priority||r.priority===o.priority)&&(!o.status||r.status===o.status)&&(!o.q||norm(JSON.stringify(r)).includes(norm(o.q))));document.getElementById('researchList').innerHTML=arr.map(researchCard).join('')||empty()}
+ if(e.target.closest('#recordFilters'))dFilterRecords();
+ if(e.target.name==='peopleSearch')dRunPeopleSearch(e.target.value);
+ if(e.target.name==='surnameSearch')dRunSurnameSearch(e.target.value);
+ if(e.target.closest('#researchFilters'))dRunResearchFilters();
  if(e.target.name==='networkPerson')drawNetwork();
  if(e.target.closest('#statsFilters')){
   window.statsStartYear=document.querySelector('[name=statsStart]')?.value||'';
   window.statsEndYear=document.querySelector('[name=statsEnd]')?.value||'';
   window.statsPlace=document.querySelector('[name=statsPlace]')?.value||'';
-  const pos=window.scrollY;renderMain();requestAnimationFrame(()=>window.scrollTo(0,pos));
+  dRunStatsFilters();
  }
  if(e.target.id==='brightnessRange'){viewerState.brightness=Number(e.target.value);applyViewer()}
  if(e.target.id==='contrastRange'){viewerState.contrast=Number(e.target.value);applyViewer()}
@@ -8084,7 +8180,7 @@ document.addEventListener('submit',async e=>{
   if(f.id==='personForm'){const p=collectPerson(f);if((p.parentIds||[]).includes(p.id))throw new Error('Une personne ne peut pas être son propre parent.');const ex=byId(state.people,p.id);if(ex)Object.assign(ex,p);else state.people.push(p);saveState(true);closeModal();renderMain();toast('Individu enregistré')}
   if(f.id==='familyForm'){const o=formDataObject(f);if(o.partner1Id===o.partner2Id)throw new Error('Une personne ne peut pas être son propre conjoint.');genericCollect(f,'families','family')}
   if(f.id==='registerForm')genericCollect(f,'registers','register');
-  if(f.id==='placeForm')genericCollect(f,'places','place');
+  if(f.id==='placeForm'){const obj=genericCollect(f,'places','place');obj.historicalAffiliations=readHistoricalAffiliations(f);saveState(true)}
   if(f.id==='surnameWatchForm')saveSurnameWatchForm(f);
   if(f.id==='researchForm')genericCollect(f,'research','research');
   if(f.id==='pageForm'){
@@ -8422,6 +8518,32 @@ function personHasHardIdentityConflict(a,b){
 function sharedSetValues(a,b){
  return [...a].filter(x=>b.has(x));
 }
+function evidenceLabel(kind){
+ return({
+  'shared-record':'Les deux mentions proviennent du même acte',
+  'same-spouse-name':'Même nom de conjoint',
+  'same-child-name':'Même nom d’enfant',
+  'same-parent-name':'Même nom de parent',
+  'same-birth':'Même date de naissance',
+  'same-baptism':'Même date de baptême',
+  'same-death':'Même date de décès',
+  'same-occupation':'Même profession',
+  'same-residence':'Même domicile',
+  'same-signature-capacity':'Même capacité à signer',
+  'close-in-time':'Mentions proches dans le temps'
+ })[kind]||kind;
+}
+function identityEvidenceTier(kindsArray){
+ const kinds=new Set(kindsArray||[]);
+ const relationalCount=['same-spouse-name','same-child-name','same-parent-name'].filter(k=>kinds.has(k)).length;
+ const strong=kinds.has('shared-record')||kinds.has('same-birth')||kinds.has('same-baptism')||kinds.has('same-death')||relationalCount>=2;
+ if(strong)return'high';
+ if(relationalCount>=1)return'medium';
+ return'low';
+}
+function identityEvidenceTierLabel(tier){
+ return({high:'Confiance élevée',medium:'Confiance moyenne',low:'Confiance faible'})[tier]||tier;
+}
 function duplicateIdentityEvidence(a,b){
  const evidence=[];
  if(!a||!b)return evidence;
@@ -8496,7 +8618,7 @@ function mergePeopleSilently(sourceId,targetId,reason=''){
  t.updatedAt=now();
  return true;
 }
-function cleanupStrongIdentityDuplicates(){
+function strongIdentityDuplicateSuggestions(){
  const groups=new Map();
  for(const p of state.people||[]){
   const key=personIdentityKey(p.lastName,p.firstNames);
@@ -8505,62 +8627,82 @@ function cleanupStrongIdentityDuplicates(){
   arr.push(p);groups.set(key,arr);
  }
 
- let removed=0;
- const log=[];
- for(const originalGroup of groups.values()){
-  if(originalGroup.length<2)continue;
+ const suggestions=[];
+ for(const group of groups.values()){
+  if(group.length<2)continue;
+  for(let i=0;i<group.length;i++){
+   for(let j=i+1;j<group.length;j++){
+    const a=group[i],b=group[j];
+    if(isConfirmedDistinct(a.id,b.id)||personHasHardIdentityConflict(a,b))continue;
 
-  let group=originalGroup.filter(p=>byId(state.people,p.id));
-  let changed=true;
-  while(changed&&group.length>1){
-   changed=false;
-   outer:
-   for(let i=0;i<group.length;i++){
-    for(let j=i+1;j<group.length;j++){
-     const a=byId(state.people,group[i].id),b=byId(state.people,group[j].id);
-     if(!a||!b)continue;
-     if(isConfirmedDistinct(a.id,b.id)||personHasHardIdentityConflict(a,b))continue;
+    const evidence=duplicateIdentityEvidence(a,b);
+    const score=evidence.reduce((sum,x)=>sum+x.weight,0);
+    const kinds=new Set(evidence.map(x=>x.kind));
+    const structural=
+     kinds.has('shared-record')||kinds.has('same-spouse-name')||
+     kinds.has('same-child-name')||kinds.has('same-parent-name')||
+     kinds.has('same-birth')||kinds.has('same-baptism')||kinds.has('same-death');
+    const occupationResidence=
+     kinds.has('same-occupation')&&kinds.has('same-residence')&&
+     (kinds.has('close-in-time')||kinds.has('same-signature-capacity'));
+    const thinCandidate=
+     (isThinIdentityMention(a)||isThinIdentityMention(b))&&
+     kinds.has('close-in-time')&&kinds.has('same-signature-capacity');
 
-     const evidence=duplicateIdentityEvidence(a,b);
-     const score=evidence.reduce((sum,x)=>sum+x.weight,0);
-     const kinds=new Set(evidence.map(x=>x.kind));
-     const structural=
-      kinds.has('shared-record')||kinds.has('same-spouse-name')||
-      kinds.has('same-child-name')||kinds.has('same-parent-name')||
-      kinds.has('same-birth')||kinds.has('same-baptism')||kinds.has('same-death');
-     const occupationResidence=
-      kinds.has('same-occupation')&&kinds.has('same-residence')&&
-      (kinds.has('close-in-time')||kinds.has('same-signature-capacity'));
-     const thinCandidate=
-      (isThinIdentityMention(a)||isThinIdentityMention(b))&&
-      kinds.has('close-in-time')&&kinds.has('same-signature-capacity');
+    if(!(structural||score>=5||occupationResidence||thinCandidate))continue;
 
-     if(!(structural||score>=5||occupationResidence||thinCandidate))continue;
-
-     const keep=personRichnessScore(a)>=personRichnessScore(b)?a:b;
-     const source=keep.id===a.id?b:a;
-     const reason=evidence.map(x=>x.kind).join(', ');
-     if(mergePeopleSilently(source.id,keep.id,reason)){
-      removed++;
-      log.push({kept:keep.id,removed:source.id,name:personName(keep),reason});
-      group=group.filter(p=>p.id!==source.id);
-      changed=true;
-      break outer;
-     }
-    }
+    const keep=personRichnessScore(a)>=personRichnessScore(b)?a:b;
+    const source=keep.id===a.id?b:a;
+    const reasonKinds=evidence.map(x=>x.kind);
+    suggestions.push({
+     id:`mergesugg_${[source.id,keep.id].sort().join('_')}`,
+     sourceId:source.id,targetId:keep.id,
+     sourceName:personName(source),targetName:personName(keep),
+     evidence:reasonKinds,score,tier:identityEvidenceTier(reasonKinds)
+    });
    }
   }
  }
- if(removed){
-  normalizeIdentityGraph();
-  state.metadata=state.metadata||{};
-  state.metadata.strongIdentityCleanupAt=now();
-  state.metadata.strongIdentityCleanupCount=(state.metadata.strongIdentityCleanupCount||0)+removed;
-  state.metadata.strongIdentityCleanupLast=log.slice(-100);
- }
- return removed;
+ return suggestions.sort((a,b)=>b.score-a.score);
 }
-
+function snapshotBeforeMerge(sourceId,targetId,sourceName,targetName){
+ state.metadata=state.metadata||{};
+ state.metadata.lastMergeBackup={
+  takenAt:now(),
+  sourceId,targetId,sourceName,targetName,
+  snapshot:{
+   people:JSON.parse(JSON.stringify(state.people||[])),
+   families:JSON.parse(JSON.stringify(state.families||[])),
+   records:JSON.parse(JSON.stringify(state.records||[])),
+   relations:JSON.parse(JSON.stringify(state.relations||[]))
+  }
+ };
+}
+function undoLastMerge(){
+ const backup=state.metadata&&state.metadata.lastMergeBackup;
+ if(!backup){toast('Aucune fusion récente à annuler');return;}
+ state.people=backup.snapshot.people;
+ state.families=backup.snapshot.families;
+ state.records=backup.snapshot.records;
+ state.relations=backup.snapshot.relations;
+ state.metadata.lastMergeBackup=null;
+ saveState(true);renderMain();
+ toast(`Fusion annulée : ${backup.sourceName} et ${backup.targetName} sont de nouveau deux fiches distinctes`);
+}
+function acceptMergeSuggestion(id){
+ const s=strongIdentityDuplicateSuggestions().find(x=>x.id===id);if(!s)return;
+ snapshotBeforeMerge(s.sourceId,s.targetId,s.sourceName,s.targetName);
+ if(mergePeopleSilently(s.sourceId,s.targetId,s.evidence.join(', '))){
+  saveState(true);renderMain();toast('Fiches fusionnées — annulable tant qu’aucune autre fusion n’a eu lieu');
+ }else{
+  state.metadata.lastMergeBackup=null;
+ }
+}
+function rejectMergeSuggestion(id){
+ const s=strongIdentityDuplicateSuggestions().find(x=>x.id===id);if(!s)return;
+ markPeopleMutuallyDistinct(s.sourceId,s.targetId);
+ saveState(true);renderMain();toast('Marquées comme des personnes différentes');
+}
 function isSchoolmasterOccupation(value=''){
  const cleaned=norm(value).replace(/[’']/g,' ').replace(/\s+/g,' ').trim();
  return cleaned==='maitre d ecole'||cleaned==='d ecole'||cleaned==='maitre ecole';
@@ -8798,19 +8940,18 @@ function rebuildEntitiesFromExistingRecords(){
  migrateResidences();
  migrateStructuredAges();
  const removed=cleanupExactTechnicalClones();
- const strongIdentityDuplicatesRemoved=cleanupStrongIdentityDuplicates();
- if(removed||technicalDuplicatesRemoved||strongIdentityDuplicatesRemoved)saveState(true);
+ if(removed||technicalDuplicatesRemoved)saveState(true);
 }
 async function init(){
  applyTheme(state.settings?.theme||'light');
  rebuildEntitiesFromExistingRecords();
  renderNav();renderMain();
  try{await initDB()}catch(e){console.error(e);toast('IndexedDB indisponible : les fichiers ne pourront pas être enregistrés')}
- if(currentTab==='pages')loadThumbs();
+ if(currentTab==='registers'&&currentSectionView('registers')==='pages')loadThumbs();
  if(navigator.storage?.estimate){const est=await navigator.storage.estimate();if(est.quota&&est.usage/est.quota>.85)toast('Attention : le stockage du navigateur est presque plein')}
  updateSaveReminder();
 }
-const observer=new MutationObserver(()=>{if(currentTab==='pages')loadThumbs()});
+const observer=new MutationObserver(()=>{if(currentTab==='registers'&&currentSectionView('registers')==='pages')loadThumbs()});
 observer.observe(document.getElementById('main'),{childList:true});
 init();
 })();
@@ -8835,8 +8976,6 @@ setTimeout(updateScriptoriaExportAlert,0);
 .bg-drive-btn[data-cloud-state="error"]::after,.bg-drive-btn[data-cloud-state="conflict"]::after{background:#c7332b}
 .bg-drive-btn[data-cloud-state="offline"]::after{background:#777}
 @keyframes bgCloudPulse{50%{opacity:.35}}
-.bg-drive-toast{position:fixed;left:50%;bottom:18px;z-index:20000;transform:translateX(-50%);max-width:min(92vw,620px);padding:10px 14px;border-radius:10px;background:#111;color:#fff;font:600 14px/1.35 system-ui,sans-serif;box-shadow:0 10px 30px rgba(0,0,0,.28);display:none;text-align:center}
-.bg-drive-toast.show{display:block}
 </style>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script id="bg-drive-sync-script">
@@ -8864,7 +9003,6 @@ function readPayload(){const raw=localStorage.getItem(CFG.storageKey);if(!raw)re
 function stableString(value){if(value===null||typeof value!=='object')return JSON.stringify(value);if(Array.isArray(value))return'['+value.map(stableString).join(',')+']';return'{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stableString(value[k])).join(',')+'}'}
 async function hashPayload(value){const bytes=new TextEncoder().encode(stableString(value));const digest=await crypto.subtle.digest('SHA-256',bytes);return[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('')}
 function deriveTimestamp(obj){const candidates=[];const visit=(v,depth=0)=>{if(depth>5||v==null)return;if(Array.isArray(v)){v.slice(0,100).forEach(x=>visit(x,depth+1));return}if(typeof v==='object'){for(const[k,x]of Object.entries(v)){if(/^(updatedAt|modifiedAt|savedAt|createdAt|timestamp)$/i.test(k)&&typeof x==='string'){const t=Date.parse(x);if(Number.isFinite(t))candidates.push(t)}visit(x,depth+1)}}};visit(obj);return candidates.length?new Date(Math.max(...candidates)).toISOString():''}
-function toast(message,ms=3400){let el=document.getElementById('bgDriveToast');if(!el){el=document.createElement('div');el.id='bgDriveToast';el.className='bg-drive-toast';document.body.appendChild(el)}el.textContent=message;el.classList.add('show');clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove('show'),ms)}
 function button(){return document.querySelector('.bg-drive-btn')}
 function setStatus(state,title){const b=button();if(!b)return;b.dataset.cloudState=state;b.title=title;b.setAttribute('aria-label',title)}
 function installButton(){if(button())return;const host=document.querySelector('.header-actions')||document.querySelector('.brand')||document.body;const b=document.createElement('button');b.type='button';b.className='bg-drive-btn header-icon-btn icon-action btn';b.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" style="width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M7 18h10a4 4 0 0 0 .7-7.94A6 6 0 0 0 6.2 8.5 4.5 4.5 0 0 0 7 18Z"/><path d="M12 12v7"/><path d="m9 15 3-3 3 3"/></svg>';b.addEventListener('click',connectDrive);host.insertBefore(b,host.lastElementChild||null);setStatus(navigator.onLine?'offline':'offline','Connecter Google Drive')}
