@@ -1609,12 +1609,15 @@ header.suite-header > .sister-nav{
 (() => {
 'use strict';
 
-const APP_VERSION='3.6.0';
+const APP_VERSION='3.6.1';
 const LS_KEY='scriptoria-data';
 const BACKUP_KEY='scriptoria-backup';
 const DB_NAME='scriptoria-files';
-const DB_VERSION=1;
+const DB_VERSION=2;
 const FILE_STORE='files';
+const BACKUP_STORE='backups';
+const PRIMARY_STATE_ID='__scriptoria_primary_state__';
+const LATEST_BACKUP_ID='__scriptoria_latest_backup__';
 const MAX_FILE=35*1024*1024;
 const WARN_FILE=12*1024*1024;
 const TYPE_LABELS={
@@ -1761,7 +1764,31 @@ function compactValueForStorage(value){
 function storageSizeBytes(value){try{return new Blob([value]).size}catch{return value.length*2}}
 function saveState(immediate=false,dataChanged=true){
  indicator('Enregistrement en cours');clearTimeout(saveTimer);
- const run=()=>{try{if(dataChanged)state.metadata.updatedAt=now();const compact=compactValueForStorage(state);const serialized=JSON.stringify(compact);localStorage.setItem(LS_KEY,serialized);indicator(`Enregistré · ${(storageSizeBytes(serialized)/1024/1024).toFixed(2)} Mo`);if(dataChanged){reminderSnoozedUntil=0;updateSaveReminder()}}catch(e){console.error(e);const quota=e?.name==='QuotaExceededError'||e?.code===22||e?.code===1014;indicator(quota?'Stockage local saturé':'Erreur de sauvegarde',true);toast(quota?'Stockage local saturé : exporte le JSON puis importe la version optimisée.':`Erreur de sauvegarde locale : ${e?.message||'cause inconnue'}`)}};
+ const run=()=>{
+  if(dataChanged)state.metadata.updatedAt=now();
+  const compact=compactValueForStorage(state);
+  const serialized=JSON.stringify(compact);
+  let localSaved=false;
+  try{
+   localStorage.setItem(LS_KEY,serialized);
+   localSaved=true;
+  }catch(e){
+   const quota=e?.name==='QuotaExceededError'||e?.code===22||e?.code===1014;
+   if(quota){
+    // Les anciennes sauvegardes dupliquaient tout le JSON dans localStorage.
+    // On libère cet espace puis on retente une seule fois.
+    try{localStorage.removeItem(BACKUP_KEY);localStorage.setItem(LS_KEY,serialized);localSaved=true}catch(retryError){console.warn('localStorage toujours saturé',retryError)}
+   }else console.error(e);
+  }
+  persistStateToIndexedDB(serialized).then(()=>{
+   const size=(storageSizeBytes(serialized)/1024/1024).toFixed(2);
+   indicator(localSaved?`Enregistré · ${size} Mo`:`Enregistré durablement · ${size} Mo`);
+  }).catch(error=>{
+   console.error('Sauvegarde IndexedDB',error);
+   if(!localSaved){indicator('Erreur de sauvegarde',true);toast(`Sauvegarde impossible : ${error?.message||'cause inconnue'}`)}
+  });
+  if(dataChanged){reminderSnoozedUntil=0;updateSaveReminder()}
+ };
  immediate?run():saveTimer=setTimeout(run,180);
 }
 function externalBackupCurrent(){const u=Date.parse(state.metadata.updatedAt||0)||0,j=Date.parse(state.metadata.lastJsonExportAt||0)||0,f=Date.parse(state.metadata.lastJsonExportAt||0)||0;return Math.max(j,f)>=u}
@@ -1769,7 +1796,14 @@ function updateSaveReminder(force=false){updateScriptoriaExportAlert()}
 function hideSaveReminder(){}
 function exportFileName(prefix){const d=new Date(),date=d.toISOString().slice(0,10);const last=prefix.includes('sauvegarde-complete')?state.metadata.lastJsonExportAt:state.metadata.lastJsonExportAt;if(last&&safe(last).slice(0,10)===date)return `${prefix}-${date}-${String(d.getHours()).padStart(2,'0')}-${String(d.getMinutes()).padStart(2,'0')}.json`;return `${prefix}-${date}.json`}
 function backupText(){
- try{localStorage.setItem(BACKUP_KEY,JSON.stringify(state));return true}catch(e){return false}
+ try{
+  const compact=compactValueForStorage(state);
+  const serialized=JSON.stringify(compact);
+  const stamp=now();
+  idbBackupPut({id:LATEST_BACKUP_ID,createdAt:stamp,payload:serialized}).catch(e=>console.error('Sauvegarde de sécurité IndexedDB',e));
+  idbBackupPut({id:`snapshot_${stamp}`,createdAt:stamp,payload:serialized}).then(pruneBackupSnapshots).catch(e=>console.error('Historique de sauvegarde IndexedDB',e));
+  return true;
+ }catch(e){console.error(e);return false}
 }
 function clone(v){return JSON.parse(JSON.stringify(v))}
 function byId(arr,id){return arr.find(x=>x.id===id)}
@@ -6475,10 +6509,53 @@ function openPageForm(p={}){
 async function initDB(){
  return new Promise((resolve,reject)=>{
   const req=indexedDB.open(DB_NAME,DB_VERSION);
-  req.onupgradeneeded=()=>{const d=req.result;if(!d.objectStoreNames.contains(FILE_STORE))d.createObjectStore(FILE_STORE,{keyPath:'id'})};
+  req.onupgradeneeded=()=>{
+   const d=req.result;
+   if(!d.objectStoreNames.contains(FILE_STORE))d.createObjectStore(FILE_STORE,{keyPath:'id'});
+   if(!d.objectStoreNames.contains(BACKUP_STORE))d.createObjectStore(BACKUP_STORE,{keyPath:'id'});
+  };
   req.onsuccess=()=>{db=req.result;resolve(db)};
   req.onerror=()=>reject(req.error);
  });
+}
+async function idbBackupPut(obj){
+ if(!db)await initDB();
+ return new Promise((resolve,reject)=>{const tx=db.transaction(BACKUP_STORE,'readwrite');tx.objectStore(BACKUP_STORE).put(obj);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error)});
+}
+async function idbBackupGet(id){
+ if(!db)await initDB();
+ return new Promise((resolve,reject)=>{const req=db.transaction(BACKUP_STORE,'readonly').objectStore(BACKUP_STORE).get(id);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)});
+}
+async function idbBackupAll(){
+ if(!db)await initDB();
+ return new Promise((resolve,reject)=>{const req=db.transaction(BACKUP_STORE,'readonly').objectStore(BACKUP_STORE).getAll();req.onsuccess=()=>resolve(req.result||[]);req.onerror=()=>reject(req.error)});
+}
+async function idbBackupDelete(id){
+ if(!db)await initDB();
+ return new Promise((resolve,reject)=>{const tx=db.transaction(BACKUP_STORE,'readwrite');tx.objectStore(BACKUP_STORE).delete(id);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error)});
+}
+async function pruneBackupSnapshots(){
+ const all=(await idbBackupAll()).filter(x=>safe(x.id).startsWith('snapshot_')).sort((a,b)=>safe(b.createdAt).localeCompare(safe(a.createdAt)));
+ await Promise.all(all.slice(5).map(x=>idbBackupDelete(x.id)));
+}
+async function persistStateToIndexedDB(serialized){
+ await idbBackupPut({id:PRIMARY_STATE_ID,updatedAt:state.metadata?.updatedAt||now(),payload:serialized});
+}
+async function hydrateStateFromIndexedDB(){
+ const saved=await idbBackupGet(PRIMARY_STATE_ID).catch(()=>null);
+ if(!saved?.payload)return false;
+ let incoming;try{incoming=JSON.parse(saved.payload)}catch{return false}
+ const localTime=Date.parse(state.metadata?.updatedAt||0)||0;
+ const idbTime=Date.parse(incoming.metadata?.updatedAt||saved.updatedAt||0)||0;
+ const localRaw=localStorage.getItem(LS_KEY);
+ if(!localRaw||idbTime>localTime){state=migrate(incoming);return true}
+ return false;
+}
+async function migrateLegacyLocalBackup(){
+ const raw=localStorage.getItem(BACKUP_KEY);
+ if(!raw)return;
+ try{JSON.parse(raw);await idbBackupPut({id:LATEST_BACKUP_ID,createdAt:now(),payload:raw})}catch(e){console.warn('Ancienne sauvegarde locale illisible',e)}
+ try{localStorage.removeItem(BACKUP_KEY)}catch(e){}
 }
 async function idbPut(obj){
  if(!db)await initDB();
@@ -7681,7 +7758,7 @@ async function importJSONFile(file){
  if(!incoming||!Array.isArray(incoming.records)||!Array.isArray(incoming.people))throw new Error('Structure de sauvegarde non reconnue');
  const hasFiles=Array.isArray(payload.files)&&payload.files.length;
  const exportDate=payload.export?.exportedAt||incoming.metadata?.lastJsonExportAt||incoming.metadata?.updatedAt||'inconnue',pdfCount=Array.isArray(payload.files)?payload.files.filter(f=>f.mimeType==='application/pdf').length:0;const summary=`Version : ${payload.export?.appVersion||incoming.metadata?.appVersion||incoming.version||'inconnue'}\nDate de l’export : ${exportDate}\nActes : ${incoming.records.length}\nIndividus : ${incoming.people.length}\nFamilles : ${incoming.families?.length||0}\nRegistres : ${incoming.registers?.length||0}\nImages/fichiers : ${hasFiles||0}\nPDF présents : ${pdfCount?'oui ('+pdfCount+')':'non'}\n\nRemplacer les données actuelles ?`;if(!confirm(summary))return;
- backupText();state=migrate(incoming);saveState(true);
+ backupText();state=migrate(incoming);rebuildEntitiesFromExistingRecords();saveState(true);
  if(hasFiles){
   let i=0;for(const f of payload.files){indicator(`Import des fichiers ${++i}/${payload.files.length}`);try{await idbPut({id:f.id,blob:dataURLToBlob(f.blob),thumbnail:f.thumbnail?dataURLToBlob(f.thumbnail):null,fileName:f.fileName,mimeType:f.mimeType})}catch(e){console.error(e)}}
  }
@@ -7734,10 +7811,12 @@ async function deleteAll(){
  await new Promise((resolve)=>{const r=indexedDB.deleteDatabase(DB_NAME);r.onsuccess=r.onerror=r.onblocked=()=>resolve()});
  state=DEFAULT_STATE();state.settings.demoDataRemoved=true;state.settings.demoSeeded=true;saveState(true);await initDB();setTab('dashboard');toast('Toutes les données Scriptoria ont été supprimées');
 }
-function restoreBackup(){
- const raw=localStorage.getItem(BACKUP_KEY);if(!raw)return toast('Aucune sauvegarde textuelle disponible');
+async function restoreBackup(){
+ const backup=await idbBackupGet(LATEST_BACKUP_ID).catch(()=>null);
+ const raw=backup?.payload||localStorage.getItem(BACKUP_KEY);
+ if(!raw)return toast('Aucune sauvegarde textuelle disponible');
  if(!confirm('Restaurer la dernière sauvegarde textuelle ?'))return;
- try{state=migrate(JSON.parse(raw));saveState(true);renderMain();toast('Sauvegarde restaurée')}catch(e){toast('Sauvegarde invalide')}
+ try{state=migrate(JSON.parse(raw));rebuildEntitiesFromExistingRecords();saveState(true);renderMain();toast('Sauvegarde restaurée')}catch(e){console.error(e);toast('Sauvegarde invalide')}
 }
 function simpleDelete(arrName,id,label){
  if(!confirm(`Supprimer ${label} ?`))return;
@@ -8943,10 +9022,18 @@ function rebuildEntitiesFromExistingRecords(){
  if(removed||technicalDuplicatesRemoved)saveState(true);
 }
 async function init(){
+ try{
+  await initDB();
+  await migrateLegacyLocalBackup();
+  const restored=await hydrateStateFromIndexedDB();
+  if(restored)toast('Dernière sauvegarde locale restaurée automatiquement.');
+ }catch(e){console.error(e);toast('IndexedDB indisponible : la sauvegarde durable et les fichiers locaux sont désactivés')}
  applyTheme(state.settings?.theme||'light');
  rebuildEntitiesFromExistingRecords();
+ currentTab=state.settings.lastTab==='pages'?'registers':(state.settings.lastTab||'dashboard');
  renderNav();renderMain();
- try{await initDB()}catch(e){console.error(e);toast('IndexedDB indisponible : les fichiers ne pourront pas être enregistrés')}
+ // Force une copie durable après migration/nettoyage, même si localStorage est proche de sa limite.
+ saveState(true,false);
  if(currentTab==='registers'&&currentSectionView('registers')==='pages')loadThumbs();
  if(navigator.storage?.estimate){const est=await navigator.storage.estimate();if(est.quota&&est.usage/est.quota>.85)toast('Attention : le stockage du navigateur est presque plein')}
  updateSaveReminder();
