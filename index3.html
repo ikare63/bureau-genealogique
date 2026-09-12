@@ -456,6 +456,7 @@ header.suite-header > .suite-tabs button.active{
 
 <div id="modalRoot"></div>
 
+<script src="lenaic-bus.js?v=1"></script>
 <script>
 const STORAGE_KEY='pistoria_private_v3';
 const BACKUP_KEY='pistoria_private_v3_backup';
@@ -1380,6 +1381,53 @@ function sourceActionForStep(step){
     name:shortRepositoryName(step?.archiveName||repository?.name||''),
     url:step?.archiveUrl||repository?.url||''
   };
+}
+
+
+/* ---------- Pistoria → Le Fil d’Ariane ---------- */
+const ARIANE_PATH='../aide_archive/Ariane.html';
+function pistoriaArianeSourceKey(inv,step){return `${inv?.id||''}::${step?.id||''}`}
+function pistoriaArianeTransfer(inv,step){
+  if(!window.LenaicBus||!inv||!step)return null;
+  const sourceKey=pistoriaArianeSourceKey(inv,step);
+  return LenaicBus.list({type:'ariane.case.create',source:'pistoria',target:'ariane'})
+    .filter(e=>e.payload?.sourceKey===sourceKey)
+    .sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt))[0]||null;
+}
+function pistoriaArianePayload(inv,step){
+  const archive=sourceActionForStep(step);
+  const sosa=inv.sosa!=null?`Sosa ${inv.sosa}`:'Sosa non renseigné';
+  const person=inv.person||inv.title||'Ancêtre à rechercher';
+  const notes=[
+    `Créé depuis Pistoria — ${sosa} · ${person}.`,
+    step.reason?`Pourquoi cette piste : ${step.reason}`:'',
+    step.instructions?`Méthode proposée : ${step.instructions}`:'',
+    archive?.url?`Ressource : ${archive.url}`:''
+  ].filter(Boolean).join('\n\n');
+  return {
+    sourceKey:pistoriaArianeSourceKey(inv,step), pistoriaInvestigationId:inv.id, pistoriaStepId:step.id,
+    sosa:inv.sosa??null, person,
+    title:`${person} — ${step.title}`, place:step.place||'', type:step.sourceCategory||step.type||archive?.name||'',
+    status:'À enquêter', goal:step.title||inv.objective||'', date:step.period||'', notes,
+    item:{label:step.title||'Piste Pistoria',cote:'',dossier:archive?.name||step.archiveName||step.sourceCategory||''},
+    createdAt:new Date().toISOString()
+  };
+}
+function createArianeCaseFromPistoria(invId,stepId){
+  const inv=getInvestigation(invId);if(!inv)return;
+  const step=(inv.steps||[]).find(s=>s.id===stepId);if(!step)return;
+  if(!window.LenaicBus){toast('Le bus local n’est pas chargé.');return}
+  const existing=pistoriaArianeTransfer(inv,step);
+  if(!existing)LenaicBus.publish('ariane.case.create',pistoriaArianePayload(inv,step),{source:'pistoria',target:'ariane'});
+  toast(existing?(existing.status==='accepted'?'Cette piste est déjà dans Ariane.':'Cette piste est déjà en attente pour Ariane.'):'Piste envoyée à Ariane.');
+  window.open(ARIANE_PATH,'_blank','noopener');
+}
+function arianeButtonHtml(inv,step){
+  if(!step)return'';
+  const transfer=pistoriaArianeTransfer(inv,step);
+  if(transfer?.status==='accepted')return `<a class="btn" href="${ARIANE_PATH}" target="_blank" rel="noopener">✓ Déjà dans Ariane</a>`;
+  if(transfer?.status==='pending')return `<button class="btn" data-create-ariane="${inv.id}" data-ariane-step="${step.id}">En attente dans Ariane ↗</button>`;
+  return `<button class="btn" data-create-ariane="${inv.id}" data-ariane-step="${step.id}">Créer une enquête dans Ariane ↗</button>`;
 }
 
 function renderInvestigations(){
@@ -2960,6 +3008,7 @@ function openInvestigation(id){
       ${current.instructions?`<p>${esc(current.instructions)}</p>`:''}
       <div class="button-row">
         ${currentArchive?`<a class="btn primary" href="${esc(currentArchive.url)}" target="_blank" rel="noopener">${esc(currentArchive.name)}</a>`:''}
+        ${arianeButtonHtml(inv,current)}
         <button class="btn primary" data-piste-result="found" data-investigation="${inv.id}" data-step="${current.id}">Acte trouvé</button>
         <button class="btn" data-piste-result="negative" data-investigation="${inv.id}" data-step="${current.id}" title="Enregistre l’échec et débloque automatiquement la piste suivante">Recherche infructueuse — autre méthode</button>
         <button class="btn" data-piste-result="partial" data-investigation="${inv.id}" data-step="${current.id}">Résultat partiel</button>
@@ -3026,6 +3075,7 @@ function bindView(){
   if(themeToggle)themeToggle.onclick=()=>applyTheme(document.documentElement.dataset.theme==='dark'?'light':'dark');
   document.querySelectorAll('[data-new-investigation]').forEach(b=>b.onclick=()=>openModal('Nouvelle enquête',investigationForm()));
   document.querySelectorAll('[data-open-investigation]').forEach(b=>b.onclick=()=>openInvestigation(b.dataset.openInvestigation));
+  document.querySelectorAll('[data-create-ariane]').forEach(b=>b.onclick=()=>createArianeCaseFromPistoria(b.dataset.createAriane,b.dataset.arianeStep));
   document.querySelectorAll('[data-tab-jump]').forEach(b=>b.onclick=()=>{activeTab=b.dataset.tabJump;render()});
   document.querySelectorAll('[data-piste-result]').forEach(b=>b.onclick=()=>{
     const inv=getInvestigation(b.dataset.investigation),step=(inv?.steps||[]).find(x=>x.id===b.dataset.step);
