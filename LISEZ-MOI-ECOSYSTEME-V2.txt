@@ -1,0 +1,40 @@
+ÉCOSYSTÈME LÉNAÏC V2 — MISE À JOUR COMMUNE
+===========================================
+
+But : relier les applications existantes sans déplacer ni renommer leur architecture GitHub.
+Toutes les données personnelles déjà présentes en localStorage restent dans leurs clés actuelles.
+
+Nouveaux services communs
+-------------------------
+- lenaic-bus-v2 : bus normalisé, avec miroir lenaic-bus-v1 pour compatibilité.
+- lenaic-notifications-v1 : centre de notifications partagé.
+- lenaic-genealogy-context-v1 : personne/contexte généalogique actif.
+- lenaic-search-index-v1 : index de recherche universelle.
+- lenaic-modules-v1 : état des rappels/modules créés dans NEXUS.
+- lenaic-app-activity-v1 : activité récente des apps.
+
+3615 / NEXUS
+-------------
+- 3615 Lénaïc passe en 9.4.
+- NEXUS passe en V5.0.
+- Centre de notifications dans 3615 et NEXUS.
+- Recherche universelle : Arboris + Scriptoria + Pistoria + Ariane + Scribe.
+- Contexte généalogique actif partagé.
+- Modules/rappels génériques créables directement depuis NEXUS, puis publiables via le CMS GitHub existant.
+- Nouveau bloc de modules sur Accueil et Aujourd'hui.
+
+Chaîne généalogique
+-------------------
+- Arboris : bouton « ◎ Contexte » sur une personne.
+- Pistoria : bouton « ◎ Contexte » sur une enquête.
+- Ariane : lit le contexte et peut créer un dossier pour la personne active.
+- Pistoria → Ariane reste compatible.
+- Quand un dossier Ariane issu de Pistoria passe à « Terminée » ou « Archivée », Pistoria reçoit une proposition.
+  Rien n'est modifié automatiquement : Pistoria demande de classer le résultat comme Acte trouvé / Infructueuse / Résultat partiel.
+
+INSTALLATION
+------------
+Chaque ZIP de mise à jour conserve exactement les chemins actuels du dépôt concerné.
+Téléverser/remplacer les fichiers dans le dépôt correspondant. Aucun reclassement n'est nécessaire.
+
+Ne pas effacer les données du site/navigateur : les données personnelles des apps sont locales.

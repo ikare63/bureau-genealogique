@@ -9037,6 +9037,12 @@ async function init(){
  if(currentTab==='registers'&&currentSectionView('registers')==='pages')loadThumbs();
  if(navigator.storage?.estimate){const est=await navigator.storage.estimate();if(est.quota&&est.usage/est.quota>.85)toast('Attention : le stockage du navigateur est presque plein')}
  updateSaveReminder();
+ // Écosystème V2 : une recherche universelle peut ouvrir directement l'onglet Individus.
+ const ecoSearch=new URLSearchParams(location.search).get('search');
+ if(ecoSearch){
+  currentTab='people'; state.settings.lastTab='people'; renderNav(); renderMain();
+  setTimeout(()=>{const input=document.querySelector('[name="peopleSearch"]');if(input){input.value=ecoSearch;input.dispatchEvent(new Event('input',{bubbles:true}))}},80);
+ }
 }
 const observer=new MutationObserver(()=>{if(currentTab==='registers'&&currentSectionView('registers')==='pages')loadThumbs()});
 observer.observe(document.getElementById('main'),{childList:true});
@@ -9147,5 +9153,7 @@ window.BureauGenealogiqueDrive={connect:connectDrive,sync:syncNow,status:()=>({c
 })();
 </script>
 
+<script src="lenaic-bus.js?v=2"></script>
+<script src="lenaic-integration.js?v=2"></script>
 </body>
 </html>
