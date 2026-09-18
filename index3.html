@@ -427,6 +427,19 @@ header.suite-header > .suite-tabs button.active{
 
 .proof-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.proof-card{border:1px solid var(--line);border-radius:14px;padding:12px;background:var(--panel)}.proof-card h4{margin:0 0 8px}.proof-score{font-size:1.55rem;font-weight:900;color:var(--accent)}.timeline-list{display:grid;gap:8px}.timeline-row{display:grid;grid-template-columns:86px 1fr;gap:10px;padding:9px 0;border-bottom:1px solid var(--line)}.timeline-year{font-weight:900;color:var(--accent)}.rule-badge{display:inline-flex;padding:4px 8px;border-radius:999px;background:var(--soft);font-size:.82rem;font-weight:800}
 </style>
+
+<style id="github-indexeddb-sync-style">
+.github-sync-btn{position:relative}
+.github-sync-btn::after{content:"";position:absolute;right:3px;bottom:3px;width:9px;height:9px;border-radius:50%;border:2px solid var(--panel,#fff);background:#d58a00}
+.github-sync-btn[data-sync-state="ok"]::after{background:#178f4b}
+.github-sync-btn[data-sync-state="dirty"]::after{background:#d58a00}
+.github-sync-btn[data-sync-state="error"]::after{background:#c7332b}
+.github-sync-btn[data-sync-state="offline"]::after{background:#777}
+.github-sync-btn[data-sync-state="busy"]::after{background:#d58a00;animation:githubSyncPulse 1s infinite}
+@keyframes githubSyncPulse{50%{opacity:.35}}
+.github-sync-help{font-size:.82rem;color:var(--muted);line-height:1.45;margin:.25rem 0 .8rem}
+.github-sync-help code{font-size:.92em}
+</style>
 </head>
 <body>
 <div class="toast" id="toast"></div>
@@ -439,6 +452,7 @@ header.suite-header > .suite-tabs button.active{
     <div class="header-actions" aria-label="Actions rapides">
       <button class="header-icon-btn" data-action="export" type="button" aria-label="Exporter les données" title="Exporter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/></svg></button>
       <button class="header-icon-btn" data-action="import" type="button" aria-label="Importer une sauvegarde" title="Importer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg></button>
+      <button class="header-icon-btn github-sync-btn" data-action="github-sync" type="button" aria-label="Synchroniser pistoria.json avec le dépôt data" title="Synchroniser pistoria.json avec le dépôt data"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7h8"/><path d="M12 3v8"/><path d="m9 6 3-3 3 3"/><path d="M6 13v5a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-5"/></svg></button>
       <button class="theme-btn" id="themeToggle" type="button" aria-label="Activer le mode sombre" title="Changer de thème">◐</button>
     </div>
   </div>
@@ -460,6 +474,12 @@ header.suite-header > .suite-tabs button.active{
 <script>
 const STORAGE_KEY='pistoria_private_v3';
 const BACKUP_KEY='pistoria_private_v3_backup';
+const PISTORIA_DB_NAME='pistoria-state-v1',PISTORIA_DB_VERSION=1,PISTORIA_STATE_STORE='state',PISTORIA_BACKUP_STORE='backups';
+const PISTORIA_STATE_ID='current',PISTORIA_IMPORT_BACKUP_ID='import-backup',PISTORIA_ARB_SYNC_BACKUP_ID='arboris-sync-backup';
+const PISTORIA_GITHUB_FILE='pistoria.json',PISTORIA_GITHUB_META_KEY='pistoria-github-sync-v1';
+const BG_GITHUB_TOKEN_SESSION_KEY='bureau-genealogique-github-token-v1';
+const SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY='scriptoria-github-token-v2';
+let pistoriaDb=null,pistoriaArborisSyncBackupMemory=null;
 const uid=(prefix='id')=>`${prefix}_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const today=()=>new Date().toISOString().slice(0,10);
@@ -496,6 +516,58 @@ function isStorageAccessError(error){
   );
 }
 
+
+function openPistoriaDB(){
+ if(pistoriaDb)return Promise.resolve(pistoriaDb);
+ return new Promise((resolve,reject)=>{
+  const req=indexedDB.open(PISTORIA_DB_NAME,PISTORIA_DB_VERSION);
+  req.onupgradeneeded=()=>{
+   const d=req.result;
+   if(!d.objectStoreNames.contains(PISTORIA_STATE_STORE))d.createObjectStore(PISTORIA_STATE_STORE,{keyPath:'id'});
+   if(!d.objectStoreNames.contains(PISTORIA_BACKUP_STORE))d.createObjectStore(PISTORIA_BACKUP_STORE,{keyPath:'id'});
+  };
+  req.onsuccess=()=>{pistoriaDb=req.result;resolve(pistoriaDb)};
+  req.onerror=()=>reject(req.error||new Error('IndexedDB indisponible'));
+ });
+}
+async function pistoriaIdbGet(store,id){
+ const d=await openPistoriaDB();
+ return new Promise((resolve,reject)=>{const req=d.transaction(store,'readonly').objectStore(store).get(id);req.onsuccess=()=>resolve(req.result||null);req.onerror=()=>reject(req.error)});
+}
+async function pistoriaIdbPut(store,row){
+ const d=await openPistoriaDB();
+ return new Promise((resolve,reject)=>{const tx=d.transaction(store,'readwrite');tx.objectStore(store).put(row);tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('Transaction IndexedDB annulée'))});
+}
+async function pistoriaIdbDelete(store,id){
+ const d=await openPistoriaDB();
+ return new Promise((resolve,reject)=>{const tx=d.transaction(store,'readwrite');tx.objectStore(store).delete(id);tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error)});
+}
+async function pistoriaPersistSerialized(serialized){
+ await pistoriaIdbPut(PISTORIA_STATE_STORE,{id:PISTORIA_STATE_ID,savedAt:new Date().toISOString(),payload:serialized});
+ return true;
+}
+async function pistoriaPersistCurrent(){
+ const serialized=JSON.stringify(data);
+ await pistoriaPersistSerialized(serialized);
+ return serialized;
+}
+async function pistoriaReadStored(){
+ const row=await pistoriaIdbGet(PISTORIA_STATE_STORE,PISTORIA_STATE_ID);
+ if(!row?.payload)return null;
+ try{return JSON.parse(row.payload)}catch(error){console.error('Copie IndexedDB Pistoria illisible',error);return null}
+}
+async function pistoriaWriteBackup(id,value){
+ return pistoriaIdbPut(PISTORIA_BACKUP_STORE,{id,savedAt:new Date().toISOString(),payload:JSON.stringify(value)});
+}
+async function pistoriaReadBackup(id){
+ const row=await pistoriaIdbGet(PISTORIA_BACKUP_STORE,id);
+ if(!row?.payload)return null;
+ try{return JSON.parse(row.payload)}catch{return null}
+}
+function pistoriaStateFreshness(value){
+ const candidates=[value?.githubSyncUpdatedAt,value?.exportedAt,value?.metadata?.updatedAt,value?.ruleEngine?.recalculatedAt].map(x=>Date.parse(x||'')||0);
+ return Math.max(0,...candidates);
+}
 const fmtDate=v=>{
   if(!v)return'—';
   const m=String(v).match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -710,107 +782,32 @@ function applyTheme(theme){
 }
 applyTheme(preferredTheme());
 
-function loadData(){
-  try{
-    const raw=storageGet(STORAGE_KEY);
-    return raw?JSON.parse(raw):cloneData(defaultData);
-  }catch(e){
-    console.warn('Chargement Pistoria impossible',e);
-    return cloneData(defaultData);
-  }
+async function loadData(){
+ await openPistoriaDB();
+ let legacy=null,stored=null;
+ try{const raw=storageGet(STORAGE_KEY);if(raw)legacy=JSON.parse(raw)}catch(error){console.warn('Ancien localStorage Pistoria illisible',error)}
+ stored=await pistoriaReadStored();
+ let chosen=null;
+ if(legacy&&stored)chosen=pistoriaStateFreshness(legacy)>=pistoriaStateFreshness(stored)?legacy:stored;
+ else chosen=legacy||stored||cloneData(defaultData);
+ const serialized=JSON.stringify(chosen);
+ await pistoriaPersistSerialized(serialized);
+ const check=await pistoriaIdbGet(PISTORIA_STATE_STORE,PISTORIA_STATE_ID);
+ if(!check?.payload||check.payload!==serialized)throw new Error('Vérification de la migration IndexedDB Pistoria impossible.');
+ if(legacy){
+  [STORAGE_KEY,BACKUP_KEY,'pistoria_data_v2_consolide','pistoria_data_v2','pistoria_data','bg-drive-sync-meta:pistoria'].forEach(storageRemove);
+  toast('Pistoria a été déplacé vers IndexedDB : le gros localStorage a été libéré.',4200);
+ }
+ return chosen;
 }
-function compactForLocalStorage(source){
-  const compact=cloneData(source);
-
-  // Pistoria fonctionne à partir des enquêtes. Le sous-arbre généalogique,
-  // le graphe complet de preuves et les données de migration restent dans
-  // le JSON privé d'origine, mais ne sont pas recopiés dans localStorage.
-  delete compact.genealogy;
-  delete compact.proofGraph;
-  delete compact.migration;
-
-  // Les files et anomalies sont recalculables ou déjà visibles dans les enquêtes.
-  if(Array.isArray(compact.researchQueue)){
-    compact.researchQueue=compact.researchQueue.map(item=>({
-      investigationId:item.investigationId,
-      personId:item.personId,
-      stepId:item.stepId,
-      title:item.title,
-      estimatedMinutes:item.estimatedMinutes,
-      priorityScore:item.priorityScore
-    }));
-  }
-
-  if(Array.isArray(compact.anomalies)){
-    compact.anomalies=compact.anomalies.map(item=>({
-      id:item.id,
-      kind:item.kind,
-      severity:item.severity,
-      entityId:item.entityId,
-      title:item.title,
-      details:item.details,
-      status:item.status
-    }));
-  }
-
-  // Supprimer les doublons lourds dans chaque enquête.
-  for(const inv of compact.investigations||[]){
-    delete inv.arborisSnapshot;
-    delete inv.familyContext;
-    delete inv.rememberedEvidence;
-
-    // Les pistes automatiques encore ouvertes sont entièrement recalculables
-    // depuis le journal. Elles ne doivent pas gonfler localStorage.
-    inv.steps=(inv.steps||[]).filter(step=>
-      !step.ruleGenerated || isCompletedResearchStep(step)
-    );
-
-    // Les indices structurés sont également recalculés depuis known + logs.
-    delete inv.structuredClues;
-    delete inv.ruleEngine;
-  }
-
-  return compact;
-}
-function persistCurrentData(){
-  const compact=compactForLocalStorage(data);
-  const payload=JSON.stringify(compact);
-
-  /*
-    setItem() remplace la valeur de manière atomique. En cas de quota dépassé,
-    l’ancienne sauvegarde doit rester intacte : on ne supprime donc jamais
-    STORAGE_KEY avant d’avoir réussi la nouvelle écriture.
-  */
-  const result=storageSet(STORAGE_KEY,payload);
-
-  if(result.ok){
-    [
-      'pistoria_data_v2_consolide',
-      'pistoria_data_v2',
-      'pistoria_data'
-    ].forEach(key=>{
-      if(key!==STORAGE_KEY)storageRemove(key);
-    });
-
-    data=compact;
-    return {
-      ok:true,
-      persisted:true,
-      bytes:new Blob([payload]).size
-    };
-  }
-
-  console.error(
-    'Sauvegarde locale Pistoria refusée. La sauvegarde précédente est conservée.',
-    result.error
-  );
-
-  return {
-    ok:false,
-    persisted:false,
-    error:result.error,
-    reason:isStorageAccessError(result.error)?'storage-unavailable':'storage-failed'
-  };
+function persistCurrentData(markDirty=true){
+ const payload=JSON.stringify(data);
+ pistoriaPersistSerialized(payload).catch(error=>{
+  console.error('Sauvegarde IndexedDB Pistoria',error);
+  toast('Pistoria n’a pas pu enregistrer dans IndexedDB.',5000);
+ });
+ if(markDirty)pistoriaMarkGithubDirty();
+ return{ok:true,persisted:true,bytes:new Blob([payload]).size};
 }
 function saveData(){
   recalculateAllPlans(data);
@@ -2035,8 +2032,7 @@ function compareHomonyms(){
 
 function renderSettings(){
   const privacyNotice=`<div class="notice" style="margin-bottom:14px"><strong>Confidentialité :</strong> les données importées sont stockées uniquement dans le localStorage de ce navigateur, sous une forme allégée. Elles ne sont pas incluses dans le fichier HTML publié.</div>`;
-  let syncBackup=null;
-  try{syncBackup=JSON.parse(storageGet(ARBORIS_SYNC_BACKUP_KEY)||'null');}catch(e){}
+  const syncBackup=pistoriaArborisSyncBackupMemory;
   const undoBanner=syncBackup&&syncBackup.snapshot?`<div class="notice warn" style="margin-bottom:14px"><strong>Dernière synchronisation Arboris : ${esc(new Date(syncBackup.takenAt).toLocaleString('fr-FR'))}.</strong> <button class="btn" data-undo-arboris-sync>Annuler cette synchronisation</button></div>`:'';
 
   return `${privacyNotice}${undoBanner}${section('Réglages','Sauvegarde et entretien de Pistoria')}
@@ -3908,8 +3904,8 @@ function applyArborisSyncPreview(preview,sourceFileName){
     sourceFileName:sourceFileName||'',
     snapshot:cloneData(data)
   };
-  try{storageSet(ARBORIS_SYNC_BACKUP_KEY,JSON.stringify(backupPayload));}
-  catch(e){console.error('Sauvegarde avant synchronisation impossible',e);}
+  pistoriaArborisSyncBackupMemory=backupPayload;
+  pistoriaWriteBackup(PISTORIA_ARB_SYNC_BACKUP_ID,backupPayload).catch(e=>console.error('Sauvegarde avant synchronisation impossible',e));
 
   for(const{inv,person,snapshot}of preview.updatedSosa){
     inv.arborisSync=inv.arborisSync||{};
@@ -3959,16 +3955,16 @@ function applyArborisSyncPreview(preview,sourceFileName){
   return logEntry;
 }
 function undoLastArborisSync(){
-  let backup=null;
-  try{backup=JSON.parse(storageGet(ARBORIS_SYNC_BACKUP_KEY)||'null');}catch(e){}
-  if(!backup||!backup.snapshot){
-    alert('Aucune synchronisation récente à annuler.');
-    return false;
-  }
-  data=backup.snapshot;
-  try{storageSet(ARBORIS_SYNC_BACKUP_KEY,'');}catch(e){}
-  saveData();
-  return true;
+ const backup=pistoriaArborisSyncBackupMemory;
+ if(!backup||!backup.snapshot){
+  alert('Aucune synchronisation récente à annuler.');
+  return false;
+ }
+ data=backup.snapshot;
+ pistoriaArborisSyncBackupMemory=null;
+ pistoriaIdbDelete(PISTORIA_BACKUP_STORE,PISTORIA_ARB_SYNC_BACKUP_ID).catch(console.error);
+ saveData();
+ return true;
 }
 function enforceSosaOnlyScope(payload){
   if(!payload||typeof payload!=='object')return payload;
@@ -4055,11 +4051,7 @@ function enforceSosaOnlyScope(payload){
 }
 
 function backupBeforeImport(){
-  try{
-    storageSet(BACKUP_KEY,JSON.stringify(data));
-  }catch(error){
-    console.warn('Sauvegarde avant import impossible',error);
-  }
+  pistoriaWriteBackup(PISTORIA_IMPORT_BACKUP_ID,cloneData(data)).catch(error=>console.warn('Sauvegarde avant import impossible',error));
 }
 
 function importData(event){
@@ -4199,16 +4191,15 @@ function showArborisSyncPreviewModal(preview,payload,fileName){
   };
 }
 
-function restorePreviousImport(){
-  const raw=storageGet(BACKUP_KEY);
-  if(!raw){
+async function restorePreviousImport(){
+  const backup=await pistoriaReadBackup(PISTORIA_IMPORT_BACKUP_ID);
+  if(!backup){
     alert('Aucune sauvegarde antérieure à restaurer.');
     return;
   }
   if(!confirm('Restaurer les données présentes avant le dernier import ?'))return;
-
   try{
-    data=normalizePistoriaData(JSON.parse(raw));
+    data=normalizePistoriaData(backup);
     saveData();
     alert('Les données antérieures ont été restaurées.');
   }catch(error){
@@ -4216,12 +4207,32 @@ function restorePreviousImport(){
   }
 }
 
+
+function pistoriaReadGithubMeta(){try{return JSON.parse(storageGet(PISTORIA_GITHUB_META_KEY)||'{}')}catch{return{}}}
+function pistoriaWriteGithubMeta(patch){const next={...pistoriaReadGithubMeta(),...patch};storageSet(PISTORIA_GITHUB_META_KEY,JSON.stringify(next));pistoriaRefreshGithubStatus();return next}
+function pistoriaGithubToday(){return new Date().toISOString().slice(0,10)}
+function pistoriaMarkGithubDirty(){const meta=pistoriaReadGithubMeta();pistoriaWriteGithubMeta({dirty:true,lastLocalChange:new Date().toISOString(),lastSyncDate:meta.lastSyncDate||''})}
+function pistoriaGetGithubToken(){return sessionStorage.getItem(BG_GITHUB_TOKEN_SESSION_KEY)||sessionStorage.getItem(SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY)||''}
+function pistoriaSetGithubToken(token){if(token){sessionStorage.setItem(BG_GITHUB_TOKEN_SESSION_KEY,token);sessionStorage.setItem(SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY,token)}else sessionStorage.removeItem(BG_GITHUB_TOKEN_SESSION_KEY)}
+function pistoriaGithubConfig(){const saved=pistoriaReadGithubMeta(),m=location.hostname.match(/^([^.]+)\.github\.io$/i);return{owner:saved.owner||m?.[1]||'ikare63',repo:saved.repo||'data',branch:saved.branch||'main',path:saved.path||PISTORIA_GITHUB_FILE}}
+function pistoriaRefreshGithubStatus(){const b=document.querySelector('[data-action="github-sync"]');if(!b)return;const meta=pistoriaReadGithubMeta(),current=meta.lastSyncDate===pistoriaGithubToday()&&!meta.dirty;b.dataset.syncState=!navigator.onLine?'offline':current?'ok':'dirty';b.title=!navigator.onLine?'GitHub — hors connexion':current?`GitHub synchronisé aujourd’hui${meta.lastSyncAt?' · '+new Date(meta.lastSyncAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}`:'GitHub — sauvegarde pistoria.json à effectuer';b.setAttribute('aria-label',b.title)}
+function pistoriaTextToBase64(text){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]||'');r.onerror=()=>reject(r.error);r.readAsDataURL(new Blob([text],{type:'application/json;charset=utf-8'}))})}
+function pistoriaBase64ToText(b64){const bin=atob((b64||'').replace(/\n/g,'')),bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);return new TextDecoder().decode(bytes)}
+async function pistoriaGithubApi(url,options={}){const token=pistoriaGetGithubToken();if(!token)throw new Error('Aucun jeton GitHub fourni.');const headers=new Headers(options.headers||{});headers.set('Accept','application/vnd.github+json');headers.set('Authorization',`Bearer ${token}`);headers.set('X-GitHub-Api-Version','2022-11-28');const res=await fetch(url,{...options,headers});if(res.status===401||res.status===403)throw new Error('Jeton GitHub refusé ou permission Contents insuffisante.');return res}
+async function pistoriaReadGithub(cfg){const api=`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;const metaRes=await pistoriaGithubApi(api);if(metaRes.status===404)return{sha:'',doc:null};if(!metaRes.ok)throw new Error(`Lecture GitHub impossible (${metaRes.status}).`);const info=await metaRes.json();let text='';if(info.content)text=pistoriaBase64ToText(info.content);else{const rawRes=await pistoriaGithubApi(api,{headers:{Accept:'application/vnd.github.raw'}});if(!rawRes.ok)throw new Error(`Lecture de pistoria.json impossible (${rawRes.status}).`);text=await rawRes.text()}let doc=null;try{doc=JSON.parse(text)}catch{throw new Error('Le pistoria.json présent sur GitHub est illisible.')}return{sha:info.sha||'',doc}}
+function pistoriaValidRemote(doc){return !!doc&&Array.isArray(doc.investigations)}
+async function pistoriaLoadGithubState(remote,cfg,sha=''){await pistoriaWriteBackup(PISTORIA_IMPORT_BACKUP_ID,cloneData(data));data=normalizePistoriaData(remote);data=enforceSosaOnlyScope(data);normalizeRepositoryLabelsAndLinks();applyRepositoryEnhancements();normalizeEvidenceWindows();applyEvidenceMemoryToInvestigations();data.githubSyncUpdatedAt=new Date().toISOString();await pistoriaPersistCurrent();pistoriaWriteGithubMeta({owner:cfg.owner,repo:cfg.repo,branch:cfg.branch,path:cfg.path,dirty:false,lastSyncAt:data.githubSyncUpdatedAt,lastSyncDate:pistoriaGithubToday(),lastRemoteSha:sha});render();toast('La version GitHub de Pistoria a été chargée.');return true}
+async function pistoriaGithubSync(config={}){if(!navigator.onLine)throw new Error('Connexion Internet indisponible.');const cfg={...pistoriaGithubConfig(),...config};const b=document.querySelector('[data-action="github-sync"]');if(b)b.dataset.syncState='busy';const remote=await pistoriaReadGithub(cfg),remoteState=pistoriaValidRemote(remote.doc)?remote.doc:null;const meta=pistoriaReadGithubMeta();const localTime=Math.max(pistoriaStateFreshness(data),Date.parse(meta.lastLocalChange||'')||0),remoteTime=pistoriaStateFreshness(remoteState||{});const localHas=(data?.investigations?.length||0)>0,remoteHas=!!remoteState&&(remoteState.investigations?.length||0)>0;if(remoteHas&&(!localHas||remoteTime>localTime)){const msg=!localHas?'Une sauvegarde Pistoria existe déjà dans le dépôt data. La charger sur cet appareil ?':`La version GitHub semble plus récente (${new Date(remoteTime).toLocaleString('fr-FR')}) que la copie locale (${localTime?new Date(localTime).toLocaleString('fr-FR'):'date inconnue'}).\n\nOK : charger GitHub.\nAnnuler : ne rien écraser.`;if(confirm(msg))return pistoriaLoadGithubState(remoteState,cfg,remote.sha);pistoriaRefreshGithubStatus();toast('Aucune version n’a été écrasée.');return false}const syncAt=new Date().toISOString(),payload=cloneData(data);payload.githubSyncUpdatedAt=syncAt;const content=await pistoriaTextToBase64(JSON.stringify(payload,null,2));const api=`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}`;const body={message:`Pistoria — sauvegarde ${pistoriaGithubToday()}`,content,branch:cfg.branch};if(remote.sha)body.sha=remote.sha;const res=await pistoriaGithubApi(api,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!res.ok){let detail='';try{detail=(await res.json())?.message||''}catch{}throw new Error(detail||`Écriture GitHub impossible (${res.status}).`)}const result=await res.json();data.githubSyncUpdatedAt=syncAt;pistoriaWriteGithubMeta({owner:cfg.owner,repo:cfg.repo,branch:cfg.branch,path:cfg.path,dirty:false,lastSyncAt:syncAt,lastSyncDate:pistoriaGithubToday(),lastCommitSha:result.commit?.sha||''});await pistoriaPersistCurrent();toast('Pistoria sauvegardé dans data/pistoria.json.');return true}
+function openPistoriaGithubModal(){const cfg=pistoriaGithubConfig(),hasToken=!!pistoriaGetGithubToken();openModal('Synchroniser avec GitHub',`<form id="pistoriaGithubSyncForm"><p class="github-sync-help">Pistoria travaille dans IndexedDB et synchronise son état complet dans <code>ikare63/data/${esc(cfg.path)}</code>. Le dépôt <code>data</code> doit rester privé. Le jeton GitHub n’est conservé que pendant cette session.</p><div class="form-grid"><div class="field"><label>Propriétaire</label><input name="owner" value="${esc(cfg.owner)}" required></div><div class="field"><label>Dépôt</label><input name="repo" value="${esc(cfg.repo)}" required></div><div class="field"><label>Branche</label><input name="branch" value="${esc(cfg.branch)}" required></div><div class="field"><label>Chemin du JSON</label><input name="path" value="${esc(cfg.path)}" required></div><div class="field" style="grid-column:1/-1"><label>Jeton GitHub à portée fine</label><input type="password" name="token" ${hasToken?'placeholder="Jeton déjà chargé pour cette session"':'required placeholder="github_pat_…"'} autocomplete="off"><small>Permission minimale : Contents — Read and write sur le dépôt privé data.</small></div></div><div class="button-row"><button class="btn primary" type="submit">Synchroniser maintenant</button><button class="btn" type="button" data-close-modal>Annuler</button></div></form>`);const form=document.getElementById('pistoriaGithubSyncForm');if(form)form.onsubmit=async event=>{event.preventDefault();const fd=new FormData(form),token=String(fd.get('token')||'').trim();if(token)pistoriaSetGithubToken(token);const config={owner:String(fd.get('owner')||'').trim(),repo:String(fd.get('repo')||'').trim(),branch:String(fd.get('branch')||'main').trim(),path:String(fd.get('path')||PISTORIA_GITHUB_FILE).trim()};pistoriaWriteGithubMeta(config);const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;try{await pistoriaGithubSync(config);closeModal()}catch(error){console.error('Synchronisation GitHub Pistoria',error);if(submit)submit.disabled=false;const b=document.querySelector('[data-action="github-sync"]');if(b)b.dataset.syncState='error';alert('Synchronisation impossible : '+(error?.message||'erreur inconnue'))}}}
 /* Gestionnaires permanents de l’en-tête. */
 document.querySelectorAll('[data-action="export"]').forEach(button=>{
   button.addEventListener('click',exportData);
 });
 document.querySelectorAll('[data-action="import"]').forEach(button=>{
   button.addEventListener('click',openImportPicker);
+});
+document.querySelectorAll('[data-action="github-sync"]').forEach(button=>{
+  button.addEventListener('click',openPistoriaGithubModal);
 });
 document.querySelector('#importFile')?.addEventListener('change',importData);
 
@@ -4243,113 +4254,30 @@ document.addEventListener('keydown',e=>{
   le premier appel à normalizePistoriaData(). Cela évite le crash silencieux
   qui laissait uniquement l’en-tête visible.
 */
-data=normalizePistoriaData(loadData());
-normalizeRepositoryLabelsAndLinks();
-applyRepositoryEnhancements();
-normalizeEvidenceWindows();
-applyEvidenceMemoryToInvestigations();
-
-/*
-  La normalisation peut classer une enquête grâce à une preuve déjà présente
-  dans le journal. On enregistre immédiatement cet état avant le premier rendu.
-*/
-persistCurrentData();
-render();
-
-if(!storageGet(PISTORIA_RESOLVED_SNAPSHOT_KEY))storageSet(PISTORIA_RESOLVED_SNAPSHOT_KEY,JSON.stringify(pistoriaResolvedIds()));
-setTimeout(updatePistoriaExportAlert,0);
+async function initPistoria(){
+ try{
+  data=normalizePistoriaData(await loadData());
+  pistoriaArborisSyncBackupMemory=await pistoriaReadBackup(PISTORIA_ARB_SYNC_BACKUP_ID);
+  normalizeRepositoryLabelsAndLinks();
+  applyRepositoryEnhancements();
+  normalizeEvidenceWindows();
+  applyEvidenceMemoryToInvestigations();
+  await pistoriaPersistCurrent();
+  render();
+  if(!storageGet(PISTORIA_RESOLVED_SNAPSHOT_KEY))storageSet(PISTORIA_RESOLVED_SNAPSHOT_KEY,JSON.stringify(pistoriaResolvedIds()));
+  pistoriaRefreshGithubStatus();
+  window.addEventListener('online',pistoriaRefreshGithubStatus);
+  window.addEventListener('offline',pistoriaRefreshGithubStatus);
+  setTimeout(updatePistoriaExportAlert,0);
+ }catch(error){
+  console.error('Initialisation Pistoria',error);
+  data=normalizePistoriaData(cloneData(defaultData));render();
+  toast('Erreur d’initialisation du stockage Pistoria',5000);
+ }
+}
+initPistoria();
 </script>
-<style id="bg-drive-sync-style">
-.bg-drive-btn{position:relative}
-.bg-drive-btn[data-cloud-state="ok"]::after,.bg-drive-btn[data-cloud-state="busy"]::after,.bg-drive-btn[data-cloud-state="error"]::after,.bg-drive-btn[data-cloud-state="offline"]::after,.bg-drive-btn[data-cloud-state="conflict"]::after{content:"";position:absolute;right:3px;bottom:3px;width:9px;height:9px;border-radius:50%;border:2px solid var(--panel,#fff);background:#178f4b}
-.bg-drive-btn[data-cloud-state="busy"]::after{background:#d58a00;animation:bgCloudPulse 1s infinite}
-.bg-drive-btn[data-cloud-state="error"]::after,.bg-drive-btn[data-cloud-state="conflict"]::after{background:#c7332b}
-.bg-drive-btn[data-cloud-state="offline"]::after{background:#777}
-@keyframes bgCloudPulse{50%{opacity:.35}}
-</style>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
-<script id="bg-drive-sync-script">
-(()=>{
-'use strict';
-const CFG={
-  clientId:'595271487480-al28mer61ta0qounhuhui0gvfb7hibpa.apps.googleusercontent.com',
-  appId:'pistoria',
-  appName:'Pistoria',
-  storageKey:'pistoria_private_v3',
-  fileName:'Bureau genealogique - Pistoria.json',
-  scope:'https://www.googleapis.com/auth/drive.file',
-  intervalMs:15*60*1000
-};
-const META_KEY=`bg-drive-sync-meta:${CFG.appId}`;
-const DEVICE_KEY='bg-drive-device-id';
-let tokenClient=null,accessToken='',cloudFile=null,syncing=false,applyingCloud=false,changeTimer=null;
-const originalSetItem=Storage.prototype.setItem;
-const nowIso=()=>new Date().toISOString();
-const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-function getDeviceId(){let id=localStorage.getItem(DEVICE_KEY);if(!id){id=`device_${Date.now()}_${Math.random().toString(36).slice(2,9)}`;originalSetItem.call(localStorage,DEVICE_KEY,id)}return id}
-function readMeta(){try{return JSON.parse(localStorage.getItem(META_KEY)||'{}')}catch{return{}}}
-function writeMeta(patch){const next={...readMeta(),...patch};originalSetItem.call(localStorage,META_KEY,JSON.stringify(next));return next}
-function readPayload(){const raw=localStorage.getItem(CFG.storageKey);if(!raw)return null;try{return JSON.parse(raw)}catch{return null}}
-function stableString(value){if(value===null||typeof value!=='object')return JSON.stringify(value);if(Array.isArray(value))return'['+value.map(stableString).join(',')+']';return'{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stableString(value[k])).join(',')+'}'}
-async function hashPayload(value){const bytes=new TextEncoder().encode(stableString(value));const digest=await crypto.subtle.digest('SHA-256',bytes);return[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('')}
-function deriveTimestamp(obj){const candidates=[];const visit=(v,depth=0)=>{if(depth>5||v==null)return;if(Array.isArray(v)){v.slice(0,100).forEach(x=>visit(x,depth+1));return}if(typeof v==='object'){for(const[k,x]of Object.entries(v)){if(/^(updatedAt|modifiedAt|savedAt|createdAt|timestamp)$/i.test(k)&&typeof x==='string'){const t=Date.parse(x);if(Number.isFinite(t))candidates.push(t)}visit(x,depth+1)}}};visit(obj);return candidates.length?new Date(Math.max(...candidates)).toISOString():''}
-function toast(message,ms=3400){const el=document.getElementById('toast');if(!el)return;el.textContent=message;el.classList.add('show');clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove('show'),ms)}
-function button(){return document.querySelector('.bg-drive-btn')}
-function setStatus(state,title){const b=button();if(!b)return;b.dataset.cloudState=state;b.title=title;b.setAttribute('aria-label',title)}
-function installButton(){if(button())return;const host=document.querySelector('.header-actions')||document.querySelector('.brand')||document.body;const b=document.createElement('button');b.type='button';b.className='bg-drive-btn header-icon-btn icon-action btn';b.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" style="width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M7 18h10a4 4 0 0 0 .7-7.94A6 6 0 0 0 6.2 8.5 4.5 4.5 0 0 0 7 18Z"/><path d="M12 12v7"/><path d="m9 15 3-3 3 3"/></svg>';b.addEventListener('click',connectDrive);host.insertBefore(b,host.lastElementChild||null);setStatus(navigator.onLine?'offline':'offline','Connecter Google Drive')}
-function waitForGoogle(){return new Promise(async(resolve,reject)=>{for(let i=0;i<80;i++){if(window.google?.accounts?.oauth2)return resolve();await sleep(100)}reject(new Error('Le service de connexion Google ne s’est pas chargé.'))})}
-async function initTokenClient(){if(tokenClient)return;await waitForGoogle();tokenClient=google.accounts.oauth2.initTokenClient({client_id:CFG.clientId,scope:CFG.scope,callback:()=>{}})}
-async function requestToken(prompt='consent'){
-  await initTokenClient();
-  return new Promise((resolve,reject)=>{
-    tokenClient.callback=response=>{if(response?.error)return reject(new Error(response.error_description||response.error));accessToken=response.access_token||'';resolve(accessToken)};
-    tokenClient.error_callback=err=>reject(new Error(err?.message||'Connexion Google annulée'));
-    tokenClient.requestAccessToken({prompt});
-  });
-}
-async function connectDrive(silent=false){
-  if(!navigator.onLine){setStatus('offline','Hors connexion');toast('Connexion Internet indisponible.');return}
-  try{setStatus('busy','Connexion à Google Drive…');await requestToken(silent?'':'consent');setStatus('busy','Synchronisation avec Google Drive…');await syncNow({reason:'connexion'});if(accessToken)setStatus('ok','Google Drive synchronisé');}
-  catch(error){console.error('Google Drive',error);accessToken='';setStatus('error','Reconnecter Google Drive');if(!silent)toast(`Connexion Drive impossible : ${error.message}`)}
-}
-async function driveFetch(url,options={}){if(!accessToken)throw new Error('Google Drive n’est pas connecté.');const headers=new Headers(options.headers||{});headers.set('Authorization',`Bearer ${accessToken}`);const response=await fetch(url,{...options,headers});if(response.status===401){accessToken='';setStatus('error','Reconnecter Google Drive');throw new Error('Autorisation Google expirée. Reconnecte Drive.')}if(!response.ok){let msg='';try{msg=(await response.json())?.error?.message||''}catch{}throw new Error(msg||`Erreur Drive ${response.status}`)}return response}
-function q(value){return value.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-async function findCloudFile(){const params=new URLSearchParams({q:`name='${q(CFG.fileName)}' and trashed=false`,spaces:'drive',fields:'files(id,name,modifiedTime,createdTime,size)',orderBy:'modifiedTime desc',pageSize:'10'});const res=await driveFetch(`https://www.googleapis.com/drive/v3/files?${params}`);const json=await res.json();cloudFile=json.files?.[0]||null;return cloudFile}
-async function readCloud(){const file=await findCloudFile();if(!file)return null;const res=await driveFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media`);const text=await res.text();try{return JSON.parse(text)}catch{throw new Error('La sauvegarde Drive est illisible.')}}
-async function createCloud(wrapper){const boundary='bg_'+Math.random().toString(36).slice(2);const metadata={name:CFG.fileName,mimeType:'application/json',appProperties:{bureauGenealogique:'1',application:CFG.appId}};const body=`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(wrapper)}\r\n--${boundary}--`;const res=await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,modifiedTime',{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body});cloudFile=await res.json();return cloudFile}
-async function updateCloud(wrapper){if(!cloudFile)await findCloudFile();if(!cloudFile)return createCloud(wrapper);const res=await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(cloudFile.id)}?uploadType=media&fields=id,name,modifiedTime`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(wrapper)});cloudFile=await res.json();return cloudFile}
-async function uploadLocal(existingCloud=null){const payload=readPayload();if(!payload)throw new Error(`Aucune donnée ${CFG.appName} à sauvegarder.`);const meta=readMeta();const hash=await hashPayload(payload);const revision=Math.max(Number(existingCloud?.revision)||0,Number(meta.lastCloudRevision)||0)+1;const wrapper={schema:'bureau-genealogique-drive-v1',application:CFG.appId,applicationName:CFG.appName,revision,updatedAt:nowIso(),deviceId:getDeviceId(),payloadHash:hash,payload};await updateCloud(wrapper);writeMeta({dirty:false,lastLocalChange:wrapper.updatedAt,lastCloudRevision:revision,lastCloudHash:hash,lastSyncAt:nowIso()});setStatus('ok',`Synchronisé avec Drive · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}`);toast(`${CFG.appName} sauvegardé sur Google Drive.`);return wrapper}
-async function importCloud(cloud){if(!cloud?.payload)throw new Error('La sauvegarde cloud ne contient aucune donnée.');applyingCloud=true;try{originalSetItem.call(localStorage,CFG.storageKey,JSON.stringify(cloud.payload));writeMeta({dirty:false,lastLocalChange:cloud.updatedAt||nowIso(),lastCloudRevision:Number(cloud.revision)||0,lastCloudHash:cloud.payloadHash||await hashPayload(cloud.payload),lastSyncAt:nowIso()});sessionStorage.setItem(`bg-drive-imported:${CFG.appId}`,'1');sessionStorage.setItem(`bg-drive-reconnect:${CFG.appId}`,'1');toast('Sauvegarde Drive plus récente importée. Actualisation…',1800);setTimeout(()=>location.reload(),900)}finally{applyingCloud=false}}
-async function syncNow({reason='manuel'}={}){
-  if(syncing||!accessToken||!navigator.onLine)return;
-  syncing=true;setStatus('busy','Synchronisation avec Google Drive…');
-  try{
-    const local=readPayload();if(!local)throw new Error('Aucune donnée locale trouvée.');
-    const localHash=await hashPayload(local);const meta=readMeta();const cloud=await readCloud();
-    if(!cloud){await uploadLocal(null);return}
-    const cloudHash=cloud.payloadHash||await hashPayload(cloud.payload);
-    if(localHash===cloudHash){writeMeta({dirty:false,lastCloudRevision:Number(cloud.revision)||0,lastCloudHash:cloudHash,lastSyncAt:nowIso(),lastLocalChange:cloud.updatedAt||meta.lastLocalChange||deriveTimestamp(local)||nowIso()});setStatus('ok','Google Drive synchronisé');return}
-    const localChanged=Date.parse(meta.lastLocalChange||deriveTimestamp(local)||0)||0;
-    const cloudChanged=Date.parse(cloud.updatedAt||0)||0;
-    const cloudAdvanced=Number(cloud.revision||0)>Number(meta.lastCloudRevision||0);
-    if(meta.dirty&&cloudAdvanced){setStatus('conflict','Conflit entre cet appareil et Google Drive');const replace=confirm(`Une sauvegarde ${CFG.appName} plus récente existe sur Google Drive, mais cet appareil contient aussi des modifications non envoyées.\n\nOK : utiliser la version Drive.\nAnnuler : ne rien écraser pour le moment.`);if(replace)await importCloud(cloud);else toast('Conflit conservé : aucune version n’a été écrasée.',5000);return}
-    if(!meta.dirty&&cloudChanged>=localChanged){await importCloud(cloud);return}
-    if(meta.dirty||localChanged>cloudChanged){await uploadLocal(cloud);return}
-    await importCloud(cloud);
-  }catch(error){console.error('Synchronisation Drive',error);setStatus(navigator.onLine?'error':'offline',navigator.onLine?'Erreur Drive — cliquer pour reconnecter':'Hors connexion');toast(`Synchronisation impossible : ${error.message}`,5000)}finally{syncing=false}
-}
-function markDirty(){if(applyingCloud)return;writeMeta({dirty:true,lastLocalChange:nowIso()});setStatus(accessToken?'busy':'offline',accessToken?'Modifications en attente d’envoi':'Drive non connecté — modifications conservées localement');clearTimeout(changeTimer);changeTimer=setTimeout(()=>syncNow({reason:'modification'}),5000)}
-Storage.prototype.setItem=function(key,value){const result=originalSetItem.apply(this,arguments);if(this===localStorage&&key===CFG.storageKey)markDirty();return result};
-window.addEventListener('storage',e=>{if(e.key===CFG.storageKey)markDirty()});
-window.addEventListener('online',()=>{setStatus(accessToken?'busy':'offline',accessToken?'Connexion revenue — synchronisation…':'Reconnecter Google Drive');if(accessToken)syncNow({reason:'retour-en-ligne'})});
-window.addEventListener('offline',()=>setStatus('offline','Hors connexion — sauvegarde locale active'));
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&accessToken)syncNow({reason:'retour-page'})});
-setInterval(()=>{if(accessToken)syncNow({reason:'controle-15-minutes'})},CFG.intervalMs);
-async function boot(){installButton();const imported=sessionStorage.getItem(`bg-drive-imported:${CFG.appId}`);if(imported){sessionStorage.removeItem(`bg-drive-imported:${CFG.appId}`);toast('La sauvegarde Google Drive la plus récente est chargée.')}const reconnect=sessionStorage.getItem(`bg-drive-reconnect:${CFG.appId}`);if(reconnect){sessionStorage.removeItem(`bg-drive-reconnect:${CFG.appId}`);await sleep(700);connectDrive(true)}}
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
-window.BureauGenealogiqueDrive={connect:connectDrive,sync:syncNow,status:()=>({connected:!!accessToken,meta:readMeta(),file:cloudFile})};
-})();
-</script>
+
 
 <script src="lenaic-integration.js?v=2"></script>
 </body>

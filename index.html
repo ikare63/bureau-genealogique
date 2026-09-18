@@ -627,6 +627,19 @@ html[data-theme="dark"] .compact-logo{
 .census-role-wrap select{min-width:190px}
 
 </style>
+
+<style id="github-indexeddb-sync-style">
+.github-sync-btn{position:relative}
+.github-sync-btn::after{content:"";position:absolute;right:3px;bottom:3px;width:9px;height:9px;border-radius:50%;border:2px solid var(--panel,#fff);background:#d58a00}
+.github-sync-btn[data-sync-state="ok"]::after{background:#178f4b}
+.github-sync-btn[data-sync-state="dirty"]::after{background:#d58a00}
+.github-sync-btn[data-sync-state="error"]::after{background:#c7332b}
+.github-sync-btn[data-sync-state="offline"]::after{background:#777}
+.github-sync-btn[data-sync-state="busy"]::after{background:#d58a00;animation:githubSyncPulse 1s infinite}
+@keyframes githubSyncPulse{50%{opacity:.35}}
+.github-sync-help{font-size:.82rem;color:var(--muted);line-height:1.45;margin:.25rem 0 .8rem}
+.github-sync-help code{font-size:.92em}
+</style>
 </head>
 <body>
 <div class="app" id="app">
@@ -651,6 +664,13 @@ html[data-theme="dark"] .compact-logo{
       aria-label="Importer des données" title="Importer">
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M12 3v13m0 0 5-5m-5 5-5-5M5 19h14"/>
+      </svg>
+    </button>
+
+      <button class="btn header-action icon-action github-sync-btn" type="button" data-github-sync
+      aria-label="Synchroniser arboris.json avec le dépôt data" title="Synchroniser arboris.json avec le dépôt data">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M8 7h8"/><path d="M12 3v8"/><path d="m9 6 3-3 3 3"/><path d="M6 13v5a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-5"/>
       </svg>
     </button>
       <button class="btn theme-btn" id="quickTheme" type="button"
@@ -685,9 +705,15 @@ html[data-theme="dark"] .compact-logo{
 <div class="toast" id="toast"></div>
 <script>
 (()=>{'use strict';
-const KEY='memoire-famille-data',BACKUP='memoire-famille-backup',APP_VERSION='1.1.0';
+const KEY='memoire-famille-data',BACKUP='memoire-famille-backup',APP_VERSION='1.2.0';
+const ARBORIS_DB_NAME='arboris-state-v1',ARBORIS_DB_VERSION=1,ARBORIS_STATE_STORE='state',ARBORIS_BACKUP_STORE='backups';
+const ARBORIS_STATE_ID='current',ARBORIS_BACKUP_ID='latest';
+const ARBORIS_GITHUB_FILE='arboris.json',ARBORIS_GITHUB_META_KEY='arboris-github-sync-v1';
+const BG_GITHUB_TOKEN_SESSION_KEY='bureau-genealogique-github-token-v1';
+const SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY='scriptoria-github-token-v2';
 const tabs=[['dashboard','Tableau de bord'],['people','Individus'],['census','Recensements'],['tree','Arbre'],['research','Recherches'],['data','Données'],['settings','Réglages']];
 let state,activeTab='dashboard',dashboardView='overview',peopleView='people',dataView='quality',censusView='ancestors',treeScale=1,treeCollapsed=new Set(),hasUnsavedChanges=false,backupReminderDismissed=false,backupReminderMinimized=false,modalReturnFocus=null;
+let arborisDb=null;
 const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const stripDiacritics=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -751,16 +777,102 @@ function purgeLegacyDemoData(s){
  s.metadata.demoLoaded=true;
  return true
 }
-function load(){
- try{
-  const raw=localStorage.getItem(KEY);
-  state=normalize(raw?JSON.parse(raw):defaultState());
-  if(purgeLegacyDemoData(state))localStorage.setItem(KEY,JSON.stringify(state));
- }catch(e){console.error(e);state=defaultState()}
- applyTheme()
+function openArborisDB(){
+ if(arborisDb)return Promise.resolve(arborisDb);
+ return new Promise((resolve,reject)=>{
+  const req=indexedDB.open(ARBORIS_DB_NAME,ARBORIS_DB_VERSION);
+  req.onupgradeneeded=()=>{
+   const d=req.result;
+   if(!d.objectStoreNames.contains(ARBORIS_STATE_STORE))d.createObjectStore(ARBORIS_STATE_STORE,{keyPath:'id'});
+   if(!d.objectStoreNames.contains(ARBORIS_BACKUP_STORE))d.createObjectStore(ARBORIS_BACKUP_STORE,{keyPath:'id'});
+  };
+  req.onsuccess=()=>{arborisDb=req.result;resolve(arborisDb)};
+  req.onerror=()=>reject(req.error||new Error('IndexedDB indisponible'));
+ });
 }
-function save(mark=true){try{if(mark){state.metadata.updatedAt=now();backupReminderDismissed=false}localStorage.setItem(KEY,JSON.stringify(state));applyTheme()}catch(e){toast('Échec de sauvegarde : stockage plein ou indisponible')};render();updateBackupBar()}
-function backup(){localStorage.setItem(BACKUP,JSON.stringify(state))}
+async function arborisIdbGet(store,id){
+ const d=await openArborisDB();
+ return new Promise((resolve,reject)=>{
+  const req=d.transaction(store,'readonly').objectStore(store).get(id);
+  req.onsuccess=()=>resolve(req.result||null);req.onerror=()=>reject(req.error);
+ });
+}
+async function arborisIdbPut(store,row){
+ const d=await openArborisDB();
+ return new Promise((resolve,reject)=>{
+  const tx=d.transaction(store,'readwrite');tx.objectStore(store).put(row);
+  tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('Transaction IndexedDB annulée'));
+ });
+}
+async function arborisPersistSerialized(serialized){
+ await arborisIdbPut(ARBORIS_STATE_STORE,{id:ARBORIS_STATE_ID,savedAt:now(),payload:serialized});
+ return true;
+}
+async function arborisPersistCurrent(){
+ const serialized=JSON.stringify(state);
+ await arborisPersistSerialized(serialized);
+ return serialized;
+}
+async function arborisReadStored(){
+ const row=await arborisIdbGet(ARBORIS_STATE_STORE,ARBORIS_STATE_ID);
+ if(!row?.payload)return null;
+ try{return normalize(JSON.parse(row.payload))}catch(error){console.error('Copie IndexedDB Arboris illisible',error);return null}
+}
+async function arborisBackupCurrent(){
+ try{await arborisIdbPut(ARBORIS_BACKUP_STORE,{id:ARBORIS_BACKUP_ID,savedAt:now(),payload:JSON.stringify(state)});return true}
+ catch(error){console.error('Sauvegarde de sécurité Arboris',error);return false}
+}
+async function arborisReadBackup(){
+ const row=await arborisIdbGet(ARBORIS_BACKUP_STORE,ARBORIS_BACKUP_ID);
+ return row?.payload||'';
+}
+function arborisStateFreshness(value){
+ const candidates=[
+  value?.metadata?.updatedAt,value?.metadata?.lastJsonExportAt,value?.metadata?.lastGithubSyncAt,
+  value?.exportedAt,value?.githubSyncUpdatedAt
+ ].map(x=>Date.parse(x||'')||0);
+ return Math.max(0,...candidates);
+}
+async function load(){
+ await openArborisDB();
+ let legacy=null,stored=null;
+ try{const raw=localStorage.getItem(KEY);if(raw)legacy=normalize(JSON.parse(raw))}catch(error){console.warn('Ancien localStorage Arboris illisible',error)}
+ stored=await arborisReadStored();
+ if(legacy&&stored)state=arborisStateFreshness(legacy)>=arborisStateFreshness(stored)?legacy:stored;
+ else state=legacy||stored||defaultState();
+ state=normalize(state);
+ purgeLegacyDemoData(state);
+ const serialized=JSON.stringify(state);
+ await arborisPersistSerialized(serialized);
+ const check=await arborisIdbGet(ARBORIS_STATE_STORE,ARBORIS_STATE_ID);
+ if(!check?.payload||check.payload!==serialized)throw new Error('Vérification de la migration IndexedDB Arboris impossible.');
+ if(legacy){
+  localStorage.removeItem(KEY);
+  localStorage.removeItem(BACKUP);
+  localStorage.removeItem('bg-drive-sync-meta:arboris');
+  toast('Arboris a été déplacé vers IndexedDB : le gros localStorage a été libéré.',4200);
+ }
+ applyTheme();
+}
+function save(mark=true){
+ try{
+  if(mark){
+   state.metadata=state.metadata||{};
+   state.metadata.updatedAt=now();
+   backupReminderDismissed=false;
+   arborisMarkGithubDirty();
+  }
+  applyTheme();
+  arborisPersistCurrent().catch(error=>{
+   console.error('Sauvegarde IndexedDB Arboris',error);
+   toast('Échec de sauvegarde IndexedDB');
+  });
+ }catch(error){
+  console.error(error);toast('Échec de sauvegarde');
+ }
+ render();updateBackupBar();
+}
+function backup(){arborisBackupCurrent()}
 function applyTheme(){let t=state?.settings?.theme||'light';if(t==='auto')t=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';document.documentElement.dataset.theme=t}
 function toast(msg,ms=2200){const t=$('#toast');if(!t)return;t.textContent=msg;t.classList.add('show');clearTimeout(t._hideTimer);t._hideTimer=setTimeout(()=>t.classList.remove('show'),ms)}
 
@@ -830,7 +942,7 @@ function migrateRequestedPlaces(){
     };walk(p)
   });
   state.places=[...grouped.values()].filter(pl=>used.has(pl.id)).map(pl=>({...pl,personIds:[...used.get(pl.id)]}));
-  localStorage.setItem(KEY,JSON.stringify(state));
+  arborisPersistCurrent().catch(console.error);
 }
 
 function migrateDataQuality(){
@@ -900,7 +1012,7 @@ function migrateDataQuality(){
   update(state.people);update(state.families);
   if(changed){
     state.metadata=state.metadata||{};state.metadata.updatedAt=now();
-    localStorage.setItem(KEY,JSON.stringify(state))
+    arborisPersistCurrent().catch(console.error)
   }
   return changed
 }
@@ -937,7 +1049,7 @@ function migrateProfessionCategories(){
   if(changed){
     state.metadata=state.metadata||{};
     state.metadata.updatedAt=now();
-    localStorage.setItem(KEY,JSON.stringify(state));
+    arborisPersistCurrent().catch(console.error);
   }
 }
 function render(){renderTabs();const main=$('#main');try{main.innerHTML=({dashboard:renderDashboardHub,people:renderPeopleHub,census:renderCensus,tree:renderTree,research:renderResearch,data:renderDataHub,settings:renderSettings}[activeTab])()}catch(e){console.error(e);main.innerHTML=`<div class="card"><h2>Une erreur est survenue</h2><p>${esc(e.message)}</p><button class="btn" onclick="location.reload()">Recharger</button></div>`}bindView()}
@@ -2331,13 +2443,14 @@ function renderStats(){
       <div class="card"><h3>Pays</h3>${bars(countries)}</div>
       <div class="card"><h3>Siècles</h3>${bars(centuries)}</div>
     </div>`}
-function renderSettings(){return`${section('Réglages et sauvegarde','Préférences, import et export')}<div class="grid dashboard-grid"><div class="card"><h3>Thème</h3>${selectFilter('set-theme','Thème', [['light','Clair'],['dark','Sombre'],['auto','Automatique']])}<div class="field"><label>Individu principal</label><select id="set-root"><option value="">Aucun</option>${state.people.map(p=>`<option value="${p.id}" ${p.id===state.settings.rootPersonId?'selected':''}>${esc(fullName(p))}</option>`).join('')}</select></div><div class="field"><label>Générations par défaut</label><select id="set-gen">${[2,3,4].map(n=>`<option ${n===state.settings.generations?'selected':''}>${n}</option>`).join('')}</select></div><div class="field"><label>Format des dates</label><select id="set-date"><option value="fr" ${state.settings.dateFormat==='fr'?'selected':''}>JJ/MM/AAAA</option><option value="iso" ${state.settings.dateFormat==='iso'?'selected':''}>AAAA-MM-JJ</option></select></div><label class="check"><input type="checkbox" id="set-portraits" ${state.settings.showPortraits?'checked':''}> Afficher les portraits</label><label class="check"><input type="checkbox" id="set-sosa" ${state.settings.showSosa?'checked':''}> Afficher les numéros Sosa</label><div class="field"><label>Niveau de détail</label><select id="set-detail"><option value="compact">Compact</option><option value="normal" ${state.settings.detailLevel==='normal'?'selected':''}>Normal</option><option value="detailed" ${state.settings.detailLevel==='detailed'?'selected':''}>Détaillé</option></select></div><div class="field"><label>Branche familiale par défaut</label><input id="set-branch" value="${esc(state.settings.defaultBranch||'')}"></div><button class="btn primary" data-save-settings>Enregistrer les préférences</button></div><div class="card"><h3>Sauvegarde</h3><div class="button-row"><button class="btn primary" data-export>Exporter toutes les données</button><label class="btn" for="importFile">Importer une sauvegarde</label><input class="hidden" id="importFile" type="file" accept="application/json"><button class="btn" data-restore>Restaurer la dernière sauvegarde automatique</button></div><p class="acc-sub">Clé locale stable : <code>${KEY}</code></p><div class="notice"><b>Sauvegarde externe recommandée.</b> Fermer l’onglet peut déclencher un avertissement si les données ont changé depuis le dernier export JSON. La boîte native du navigateur ne peut pas contenir de bouton personnalisé : utilisez « Exporter toutes les données » avant de quitter.</div></div><div class="card danger-zone"><h3>Zone dangereuse</h3><p>Ces actions peuvent supprimer vos données. Une sauvegarde automatique est créée avant réinitialisation.</p><button class="btn danger" data-reset>Supprimer toutes les données</button></div><div class="card"><h3>Métadonnées</h3><p>Version : ${APP_VERSION}</p><p>Création : ${fmtDate((state.metadata.createdAt||'').slice(0,10))}</p><p>Dernière mise à jour : ${esc(state.metadata.updatedAt||'—')}</p><p>Dernier export JSON : ${esc(state.metadata.lastJsonExportAt||'Jamais')}</p></div></div>`}
+function renderSettings(){return`${section('Réglages et sauvegarde','Préférences, import et export')}<div class="grid dashboard-grid"><div class="card"><h3>Thème</h3>${selectFilter('set-theme','Thème', [['light','Clair'],['dark','Sombre'],['auto','Automatique']])}<div class="field"><label>Individu principal</label><select id="set-root"><option value="">Aucun</option>${state.people.map(p=>`<option value="${p.id}" ${p.id===state.settings.rootPersonId?'selected':''}>${esc(fullName(p))}</option>`).join('')}</select></div><div class="field"><label>Générations par défaut</label><select id="set-gen">${[2,3,4].map(n=>`<option ${n===state.settings.generations?'selected':''}>${n}</option>`).join('')}</select></div><div class="field"><label>Format des dates</label><select id="set-date"><option value="fr" ${state.settings.dateFormat==='fr'?'selected':''}>JJ/MM/AAAA</option><option value="iso" ${state.settings.dateFormat==='iso'?'selected':''}>AAAA-MM-JJ</option></select></div><label class="check"><input type="checkbox" id="set-portraits" ${state.settings.showPortraits?'checked':''}> Afficher les portraits</label><label class="check"><input type="checkbox" id="set-sosa" ${state.settings.showSosa?'checked':''}> Afficher les numéros Sosa</label><div class="field"><label>Niveau de détail</label><select id="set-detail"><option value="compact">Compact</option><option value="normal" ${state.settings.detailLevel==='normal'?'selected':''}>Normal</option><option value="detailed" ${state.settings.detailLevel==='detailed'?'selected':''}>Détaillé</option></select></div><div class="field"><label>Branche familiale par défaut</label><input id="set-branch" value="${esc(state.settings.defaultBranch||'')}"></div><button class="btn primary" data-save-settings>Enregistrer les préférences</button></div><div class="card"><h3>Sauvegarde</h3><div class="button-row"><button class="btn primary" data-export>Exporter toutes les données</button><label class="btn" for="importFile">Importer une sauvegarde</label><input class="hidden" id="importFile" type="file" accept="application/json"><button class="btn" data-restore>Restaurer la dernière sauvegarde automatique</button></div><p class="acc-sub">Données actives : <code>IndexedDB</code> · sauvegarde distante : <code>data/arboris.json</code></p><div class="notice"><b>Sauvegarde externe recommandée.</b> Fermer l’onglet peut déclencher un avertissement si les données ont changé depuis le dernier export JSON. La boîte native du navigateur ne peut pas contenir de bouton personnalisé : utilisez « Exporter toutes les données » avant de quitter.</div></div><div class="card danger-zone"><h3>Zone dangereuse</h3><p>Ces actions peuvent supprimer vos données. Une sauvegarde automatique est créée avant réinitialisation.</p><button class="btn danger" data-reset>Supprimer toutes les données</button></div><div class="card"><h3>Métadonnées</h3><p>Version : ${APP_VERSION}</p><p>Création : ${fmtDate((state.metadata.createdAt||'').slice(0,10))}</p><p>Dernière mise à jour : ${esc(state.metadata.updatedAt||'—')}</p><p>Dernier export JSON : ${esc(state.metadata.lastJsonExportAt||'Jamais')}</p></div></div>`}
 function markUnsaved(){hasUnsavedChanges=true}
 function clearUnsaved(){hasUnsavedChanges=false}
 function backupIsOutdated(){
  const updated=Date.parse(state?.metadata?.updatedAt||'')||0;
  const exported=Date.parse(state?.metadata?.lastJsonExportAt||'')||0;
- return !!state && updated>exported;
+ const github=Date.parse(arborisReadGithubMeta().lastSyncAt||'')||0;
+ return !!state && updated>Math.max(exported,github);
 }
 function updateBackupBar(){const bar=$('#backupBar');if(!bar)return;bar.classList.toggle('show',backupIsOutdated()&&!backupReminderDismissed);bar.classList.toggle('minimized',backupReminderMinimized);const btn=$('#minimizeBackupReminder');if(btn){btn.textContent=backupReminderMinimized?'Développer':'Réduire';btn.setAttribute('aria-expanded',String(!backupReminderMinimized))}}
 function installModalCloseHandlers(){
@@ -2651,10 +2764,28 @@ function filterPlaces(){let a=[...state.places],q=$('#lf-q').value.toLowerCase()
 function bindTree(root){$('#treeRoot',root)?.addEventListener('change',e=>{state.settings.rootPersonId=e.target.value;save()});$('#treeType',root)?.addEventListener('change',refreshTree);$('#treeGen',root)?.addEventListener('change',e=>{state.settings.generations=Math.min(4,+e.target.value||4);save()});$$('[data-tree-zoom]',root).forEach(b=>b.onclick=()=>{treeScale=Math.max(.4,Math.min(2,treeScale+(b.dataset.treeZoom==='in'?.1:-.1)));$('#treeCanvas').style.transform=`scale(${treeScale})`});$('[data-tree-center]',root)?.addEventListener('click',()=>{const v=$('#treeViewport');v.scrollLeft=(v.scrollWidth-v.clientWidth)/2;v.scrollTop=0});$('[data-tree-full]',root)?.addEventListener('click',()=>$('#treeShell').requestFullscreen?.())}
 function refreshTree(){const c=$('#treeCanvas');if(c){c.innerHTML=buildTreeHtml();bindView(c)}}
 function saveSettings(){state.settings.theme=$('#set-theme').value;state.settings.rootPersonId=$('#set-root').value;state.settings.generations=Math.min(4,+$('#set-gen').value||4);state.settings.dateFormat=$('#set-date').value;state.settings.showPortraits=$('#set-portraits').checked;state.settings.showSosa=$('#set-sosa').checked;state.settings.detailLevel=$('#set-detail').value;state.settings.defaultBranch=$('#set-branch').value;save();toast('Préférences enregistrées')}
-function exportData(){try{const exportedAt=now();state.metadata.lastJsonExportAt=exportedAt;localStorage.setItem(KEY,JSON.stringify(state));const blob=new Blob([JSON.stringify({...state,version:APP_VERSION,exportedAt},null,2)],{type:'application/json'}),a=document.createElement('a'),d=new Date().toISOString().slice(0,10),url=URL.createObjectURL(blob);a.href=url;a.download=`arboris-sauvegarde-${d}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);backupReminderDismissed=false;updateBackupBar();toast('Sauvegarde JSON téléchargée')}catch(e){console.error(e);alert('La sauvegarde JSON n’a pas pu être créée : '+e.message)}}
+function exportData(){try{const exportedAt=now();state.metadata.lastJsonExportAt=exportedAt;arborisPersistCurrent().catch(console.error);const blob=new Blob([JSON.stringify({...state,version:APP_VERSION,exportedAt},null,2)],{type:'application/json'}),a=document.createElement('a'),d=new Date().toISOString().slice(0,10),url=URL.createObjectURL(blob);a.href=url;a.download=`arboris-sauvegarde-${d}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);backupReminderDismissed=false;updateBackupBar();toast('Sauvegarde JSON téléchargée')}catch(e){console.error(e);alert('La sauvegarde JSON n’a pas pu être créée : '+e.message)}}
 function importData(e){const file=e.target.files[0];if(!file)return;const r=new FileReader();r.onload=()=>{try{const parsed=JSON.parse(r.result);if(!parsed||typeof parsed!=='object'||!Array.isArray(parsed.people)||!Array.isArray(parsed.families))throw new Error('Format incompatible');const n=normalize(parsed),summary=`${n.people.length} individus, ${n.families.length} familles, ${n.sources.length} sources, ${n.research.length} recherches.`;if(confirm(`Sauvegarde détectée : ${summary}\n\nRemplacer les données actuelles ?`)){backup();state=n;migrateDataQuality();save();toast('Import réussi')}}catch(err){alert('Import impossible : '+err.message)}finally{e.target.value=''}};r.readAsText(file)}
-function restoreBackup(){const raw=localStorage.getItem(BACKUP);if(!raw)return alert('Aucune sauvegarde automatique disponible.');if(confirm('Restaurer la dernière sauvegarde automatique ?')){state=normalize(JSON.parse(raw));save();toast('Sauvegarde restaurée')}}
+async function restoreBackup(){const raw=await arborisReadBackup();if(!raw)return alert('Aucune sauvegarde automatique disponible.');if(confirm('Restaurer la dernière sauvegarde automatique ?')){state=normalize(JSON.parse(raw));save();toast('Sauvegarde restaurée')}}
 function resetAll(){if(!confirm('Supprimer toutes les données ?'))return;if(!confirm('Dernière confirmation : cette action remplacera toute la base locale.'))return;backup();state=defaultState();state.metadata.demoLoaded=true;save();toast('Toutes les données ont été supprimées')}
+
+function arborisReadGithubMeta(){try{return JSON.parse(localStorage.getItem(ARBORIS_GITHUB_META_KEY)||'{}')}catch{return{}}}
+function arborisWriteGithubMeta(patch){const next={...arborisReadGithubMeta(),...patch};localStorage.setItem(ARBORIS_GITHUB_META_KEY,JSON.stringify(next));arborisRefreshGithubStatus();return next}
+function arborisGithubToday(){return new Date().toISOString().slice(0,10)}
+function arborisMarkGithubDirty(){const meta=arborisReadGithubMeta();arborisWriteGithubMeta({dirty:true,lastLocalChange:state?.metadata?.updatedAt||now(),lastSyncDate:meta.lastSyncDate||''})}
+function arborisGetGithubToken(){return sessionStorage.getItem(BG_GITHUB_TOKEN_SESSION_KEY)||sessionStorage.getItem(SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY)||''}
+function arborisSetGithubToken(token){if(token){sessionStorage.setItem(BG_GITHUB_TOKEN_SESSION_KEY,token);sessionStorage.setItem(SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY,token)}else sessionStorage.removeItem(BG_GITHUB_TOKEN_SESSION_KEY)}
+function arborisGithubConfig(){const saved=arborisReadGithubMeta(),m=location.hostname.match(/^([^.]+)\.github\.io$/i);return{owner:saved.owner||m?.[1]||'ikare63',repo:saved.repo||'data',branch:saved.branch||'main',path:saved.path||ARBORIS_GITHUB_FILE}}
+function arborisRefreshGithubStatus(){const b=document.querySelector('[data-github-sync]');if(!b)return;const meta=arborisReadGithubMeta(),current=meta.lastSyncDate===arborisGithubToday()&&!meta.dirty;b.dataset.syncState=!navigator.onLine?'offline':current?'ok':'dirty';b.title=!navigator.onLine?'GitHub — hors connexion':current?`GitHub synchronisé aujourd’hui${meta.lastSyncAt?' · '+new Date(meta.lastSyncAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}`:'GitHub — sauvegarde arboris.json à effectuer';b.setAttribute('aria-label',b.title)}
+function arborisTextToBase64(text){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]||'');r.onerror=()=>reject(r.error);r.readAsDataURL(new Blob([text],{type:'application/json;charset=utf-8'}))})}
+function arborisBase64ToText(b64){const bin=atob((b64||'').replace(/\n/g,'')),bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);return new TextDecoder().decode(bytes)}
+async function arborisGithubApi(url,options={}){const token=arborisGetGithubToken();if(!token)throw new Error('Aucun jeton GitHub fourni.');const headers=new Headers(options.headers||{});headers.set('Accept','application/vnd.github+json');headers.set('Authorization',`Bearer ${token}`);headers.set('X-GitHub-Api-Version','2022-11-28');const res=await fetch(url,{...options,headers});if(res.status===401||res.status===403)throw new Error('Jeton GitHub refusé ou permission Contents insuffisante.');return res}
+async function arborisReadGithub(cfg){const api=`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;const metaRes=await arborisGithubApi(api);if(metaRes.status===404)return{sha:'',doc:null};if(!metaRes.ok)throw new Error(`Lecture GitHub impossible (${metaRes.status}).`);const info=await metaRes.json();let text='';if(info.content)text=arborisBase64ToText(info.content);else{const rawRes=await arborisGithubApi(api,{headers:{Accept:'application/vnd.github.raw'}});if(!rawRes.ok)throw new Error(`Lecture de arboris.json impossible (${rawRes.status}).`);text=await rawRes.text()}let doc=null;try{doc=JSON.parse(text)}catch{throw new Error('Le arboris.json présent sur GitHub est illisible.')}return{sha:info.sha||'',doc}}
+function arborisValidRemote(doc){return !!doc&&Array.isArray(doc.people)&&Array.isArray(doc.families)}
+async function arborisLoadGithubState(remote,cfg,sha=''){await arborisBackupCurrent();state=normalize(remote);ensureCensus();migrateRequestedPlaces();migrateDataQuality();migrateProfessionCategories();state.metadata=state.metadata||{};state.metadata.lastGithubSyncAt=now();await arborisPersistCurrent();arborisWriteGithubMeta({owner:cfg.owner,repo:cfg.repo,branch:cfg.branch,path:cfg.path,dirty:false,lastSyncAt:state.metadata.lastGithubSyncAt,lastSyncDate:arborisGithubToday(),lastRemoteSha:sha});render();updateBackupBar();toast('La version GitHub d’Arboris a été chargée.');return true}
+async function arborisGithubSync(config={}){if(!navigator.onLine)throw new Error('Connexion Internet indisponible.');const cfg={...arborisGithubConfig(),...config};const b=document.querySelector('[data-github-sync]');if(b)b.dataset.syncState='busy';const remote=await arborisReadGithub(cfg),remoteState=arborisValidRemote(remote.doc)?remote.doc:null;const localTime=arborisStateFreshness(state),remoteTime=arborisStateFreshness(remoteState||{});const localHas=(state?.people?.length||0)+(state?.families?.length||0)>0;const remoteHas=!!remoteState&&((remoteState.people?.length||0)+(remoteState.families?.length||0)>0);if(remoteHas&&(!localHas||remoteTime>localTime)){const msg=!localHas?'Une sauvegarde Arboris existe déjà dans le dépôt data. La charger sur cet appareil ?':`La version GitHub semble plus récente (${new Date(remoteTime).toLocaleString('fr-FR')}) que la copie locale (${localTime?new Date(localTime).toLocaleString('fr-FR'):'date inconnue'}).\n\nOK : charger GitHub.\nAnnuler : ne rien écraser.`;if(confirm(msg))return arborisLoadGithubState(remoteState,cfg,remote.sha);arborisRefreshGithubStatus();toast('Aucune version n’a été écrasée.');return false}const syncAt=now(),payload=JSON.parse(JSON.stringify(state));payload.metadata=payload.metadata||{};payload.metadata.lastGithubSyncAt=syncAt;payload.githubSyncUpdatedAt=syncAt;const content=await arborisTextToBase64(JSON.stringify(payload,null,2));const api=`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}`;const body={message:`Arboris — sauvegarde ${arborisGithubToday()}`,content,branch:cfg.branch};if(remote.sha)body.sha=remote.sha;const res=await arborisGithubApi(api,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!res.ok){let detail='';try{detail=(await res.json())?.message||''}catch{}throw new Error(detail||`Écriture GitHub impossible (${res.status}).`)}const result=await res.json();state.metadata.lastGithubSyncAt=syncAt;arborisWriteGithubMeta({owner:cfg.owner,repo:cfg.repo,branch:cfg.branch,path:cfg.path,dirty:false,lastSyncAt:syncAt,lastSyncDate:arborisGithubToday(),lastCommitSha:result.commit?.sha||''});await arborisPersistCurrent();updateBackupBar();toast('Arboris sauvegardé dans data/arboris.json.');return true}
+function openArborisGithubModal(){const cfg=arborisGithubConfig(),hasToken=!!arborisGetGithubToken();openModal('Synchroniser avec GitHub',`<form id="arborisGithubSyncForm"><p class="github-sync-help">Arboris travaille dans IndexedDB et synchronise son état complet dans <code>ikare63/data/${esc(cfg.path)}</code>. Le dépôt <code>data</code> doit rester privé. Le jeton GitHub n’est conservé que pendant cette session.</p><div class="form-grid"><div class="field"><label>Propriétaire</label><input name="owner" value="${esc(cfg.owner)}" required></div><div class="field"><label>Dépôt</label><input name="repo" value="${esc(cfg.repo)}" required></div><div class="field"><label>Branche</label><input name="branch" value="${esc(cfg.branch)}" required></div><div class="field"><label>Chemin du JSON</label><input name="path" value="${esc(cfg.path)}" required></div><div class="field full-width"><label>Jeton GitHub à portée fine</label><input type="password" name="token" ${hasToken?'placeholder="Jeton déjà chargé pour cette session"':'required placeholder="github_pat_…"'} autocomplete="off"><small>Permission minimale : Contents — Read and write sur le dépôt privé data.</small></div></div><div class="button-row"><button class="btn primary" type="submit">Synchroniser maintenant</button><button class="btn" type="button" data-close-modal>Annuler</button></div></form>`);const form=document.getElementById('arborisGithubSyncForm');if(form)form.onsubmit=async event=>{event.preventDefault();const fd=new FormData(form),token=String(fd.get('token')||'').trim();if(token)arborisSetGithubToken(token);const config={owner:String(fd.get('owner')||'').trim(),repo:String(fd.get('repo')||'').trim(),branch:String(fd.get('branch')||'main').trim(),path:String(fd.get('path')||ARBORIS_GITHUB_FILE).trim()};arborisWriteGithubMeta(config);const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;try{await arborisGithubSync(config);closeModal(true)}catch(error){console.error('Synchronisation GitHub Arboris',error);if(submit)submit.disabled=false;const b=document.querySelector('[data-github-sync]');if(b)b.dataset.syncState='error';alert('Synchronisation impossible : '+(error?.message||'erreur inconnue'))}}}
+document.querySelector('[data-github-sync]')?.addEventListener('click',openArborisGithubModal);
 $('#quickTheme').onclick=()=>{state.settings.theme=(document.documentElement.dataset.theme==='dark'?'light':'dark');save()};
 $$('[data-header-export]').forEach(button=>button.onclick=exportData);
 $$('[data-header-import]').forEach(button=>button.onclick=()=>$('#headerImportFile')?.click());
@@ -2669,98 +2800,24 @@ window.addEventListener('beforeunload',e=>{
  e.preventDefault();
  e.returnValue='';
 });
-load();ensureCensus();installModalCloseHandlers();migrateRequestedPlaces();migrateDataQuality();migrateProfessionCategories();render();updateBackupBar();
+async function initArboris(){
+ try{
+  await load();
+  ensureCensus();installModalCloseHandlers();migrateRequestedPlaces();migrateDataQuality();migrateProfessionCategories();
+  await arborisPersistCurrent();
+  render();updateBackupBar();arborisRefreshGithubStatus();
+  window.addEventListener('online',arborisRefreshGithubStatus);
+  window.addEventListener('offline',arborisRefreshGithubStatus);
+ }catch(error){
+  console.error('Initialisation Arboris',error);
+  state=normalize(defaultState());applyTheme();render();
+  toast('Erreur d’initialisation du stockage Arboris',5000);
+ }
+}
+initArboris();
 })();
 </script>
-<style id="bg-drive-sync-style">
-.bg-drive-btn{position:relative}
-.bg-drive-btn[data-cloud-state="ok"]::after,.bg-drive-btn[data-cloud-state="busy"]::after,.bg-drive-btn[data-cloud-state="error"]::after,.bg-drive-btn[data-cloud-state="offline"]::after,.bg-drive-btn[data-cloud-state="conflict"]::after{content:"";position:absolute;right:3px;bottom:3px;width:9px;height:9px;border-radius:50%;border:2px solid var(--panel,#fff);background:#178f4b}
-.bg-drive-btn[data-cloud-state="busy"]::after{background:#d58a00;animation:bgCloudPulse 1s infinite}
-.bg-drive-btn[data-cloud-state="error"]::after,.bg-drive-btn[data-cloud-state="conflict"]::after{background:#c7332b}
-.bg-drive-btn[data-cloud-state="offline"]::after{background:#777}
-@keyframes bgCloudPulse{50%{opacity:.35}}
-</style>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
-<script id="bg-drive-sync-script">
-(()=>{
-'use strict';
-const CFG={
-  clientId:'595271487480-al28mer61ta0qounhuhui0gvfb7hibpa.apps.googleusercontent.com',
-  appId:'arboris',
-  appName:'Arboris',
-  storageKey:'memoire-famille-data',
-  fileName:'Bureau genealogique - Arboris.json',
-  scope:'https://www.googleapis.com/auth/drive.file',
-  intervalMs:15*60*1000
-};
-const META_KEY=`bg-drive-sync-meta:${CFG.appId}`;
-const DEVICE_KEY='bg-drive-device-id';
-let tokenClient=null,accessToken='',cloudFile=null,syncing=false,applyingCloud=false,changeTimer=null;
-const originalSetItem=Storage.prototype.setItem;
-const nowIso=()=>new Date().toISOString();
-const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-function getDeviceId(){let id=localStorage.getItem(DEVICE_KEY);if(!id){id=`device_${Date.now()}_${Math.random().toString(36).slice(2,9)}`;originalSetItem.call(localStorage,DEVICE_KEY,id)}return id}
-function readMeta(){try{return JSON.parse(localStorage.getItem(META_KEY)||'{}')}catch{return{}}}
-function writeMeta(patch){const next={...readMeta(),...patch};originalSetItem.call(localStorage,META_KEY,JSON.stringify(next));return next}
-function readPayload(){const raw=localStorage.getItem(CFG.storageKey);if(!raw)return null;try{return JSON.parse(raw)}catch{return null}}
-function stableString(value){if(value===null||typeof value!=='object')return JSON.stringify(value);if(Array.isArray(value))return'['+value.map(stableString).join(',')+']';return'{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stableString(value[k])).join(',')+'}'}
-async function hashPayload(value){const bytes=new TextEncoder().encode(stableString(value));const digest=await crypto.subtle.digest('SHA-256',bytes);return[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('')}
-function deriveTimestamp(obj){const candidates=[];const visit=(v,depth=0)=>{if(depth>5||v==null)return;if(Array.isArray(v)){v.slice(0,100).forEach(x=>visit(x,depth+1));return}if(typeof v==='object'){for(const[k,x]of Object.entries(v)){if(/^(updatedAt|modifiedAt|savedAt|createdAt|timestamp)$/i.test(k)&&typeof x==='string'){const t=Date.parse(x);if(Number.isFinite(t))candidates.push(t)}visit(x,depth+1)}}};visit(obj);return candidates.length?new Date(Math.max(...candidates)).toISOString():''}
-function button(){return document.querySelector('.bg-drive-btn')}
-function setStatus(state,title){const b=button();if(!b)return;b.dataset.cloudState=state;b.title=title;b.setAttribute('aria-label',title)}
-function installButton(){if(button())return;const host=document.querySelector('.header-actions')||document.querySelector('.brand')||document.body;const b=document.createElement('button');b.type='button';b.className='bg-drive-btn header-icon-btn icon-action btn';b.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" style="width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M7 18h10a4 4 0 0 0 .7-7.94A6 6 0 0 0 6.2 8.5 4.5 4.5 0 0 0 7 18Z"/><path d="M12 12v7"/><path d="m9 15 3-3 3 3"/></svg>';b.addEventListener('click',connectDrive);host.insertBefore(b,host.lastElementChild||null);setStatus(navigator.onLine?'offline':'offline','Connecter Google Drive')}
-function waitForGoogle(){return new Promise(async(resolve,reject)=>{for(let i=0;i<80;i++){if(window.google?.accounts?.oauth2)return resolve();await sleep(100)}reject(new Error('Le service de connexion Google ne s’est pas chargé.'))})}
-async function initTokenClient(){if(tokenClient)return;await waitForGoogle();tokenClient=google.accounts.oauth2.initTokenClient({client_id:CFG.clientId,scope:CFG.scope,callback:()=>{}})}
-async function requestToken(prompt='consent'){
-  await initTokenClient();
-  return new Promise((resolve,reject)=>{
-    tokenClient.callback=response=>{if(response?.error)return reject(new Error(response.error_description||response.error));accessToken=response.access_token||'';resolve(accessToken)};
-    tokenClient.error_callback=err=>reject(new Error(err?.message||'Connexion Google annulée'));
-    tokenClient.requestAccessToken({prompt});
-  });
-}
-async function connectDrive(silent=false){
-  if(!navigator.onLine){setStatus('offline','Hors connexion');toast('Connexion Internet indisponible.');return}
-  try{setStatus('busy','Connexion à Google Drive…');await requestToken(silent?'':'consent');setStatus('busy','Synchronisation avec Google Drive…');await syncNow({reason:'connexion'});if(accessToken)setStatus('ok','Google Drive synchronisé');}
-  catch(error){console.error('Google Drive',error);accessToken='';setStatus('error','Reconnecter Google Drive');if(!silent)toast(`Connexion Drive impossible : ${error.message}`)}
-}
-async function driveFetch(url,options={}){if(!accessToken)throw new Error('Google Drive n’est pas connecté.');const headers=new Headers(options.headers||{});headers.set('Authorization',`Bearer ${accessToken}`);const response=await fetch(url,{...options,headers});if(response.status===401){accessToken='';setStatus('error','Reconnecter Google Drive');throw new Error('Autorisation Google expirée. Reconnecte Drive.')}if(!response.ok){let msg='';try{msg=(await response.json())?.error?.message||''}catch{}throw new Error(msg||`Erreur Drive ${response.status}`)}return response}
-function q(value){return value.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-async function findCloudFile(){const params=new URLSearchParams({q:`name='${q(CFG.fileName)}' and trashed=false`,spaces:'drive',fields:'files(id,name,modifiedTime,createdTime,size)',orderBy:'modifiedTime desc',pageSize:'10'});const res=await driveFetch(`https://www.googleapis.com/drive/v3/files?${params}`);const json=await res.json();cloudFile=json.files?.[0]||null;return cloudFile}
-async function readCloud(){const file=await findCloudFile();if(!file)return null;const res=await driveFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media`);const text=await res.text();try{return JSON.parse(text)}catch{throw new Error('La sauvegarde Drive est illisible.')}}
-async function createCloud(wrapper){const boundary='bg_'+Math.random().toString(36).slice(2);const metadata={name:CFG.fileName,mimeType:'application/json',appProperties:{bureauGenealogique:'1',application:CFG.appId}};const body=`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(wrapper)}\r\n--${boundary}--`;const res=await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,modifiedTime',{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body});cloudFile=await res.json();return cloudFile}
-async function updateCloud(wrapper){if(!cloudFile)await findCloudFile();if(!cloudFile)return createCloud(wrapper);const res=await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(cloudFile.id)}?uploadType=media&fields=id,name,modifiedTime`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(wrapper)});cloudFile=await res.json();return cloudFile}
-async function uploadLocal(existingCloud=null){const payload=readPayload();if(!payload)throw new Error(`Aucune donnée ${CFG.appName} à sauvegarder.`);const meta=readMeta();const hash=await hashPayload(payload);const revision=Math.max(Number(existingCloud?.revision)||0,Number(meta.lastCloudRevision)||0)+1;const wrapper={schema:'bureau-genealogique-drive-v1',application:CFG.appId,applicationName:CFG.appName,revision,updatedAt:nowIso(),deviceId:getDeviceId(),payloadHash:hash,payload};await updateCloud(wrapper);writeMeta({dirty:false,lastLocalChange:wrapper.updatedAt,lastCloudRevision:revision,lastCloudHash:hash,lastSyncAt:nowIso()});setStatus('ok',`Synchronisé avec Drive · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}`);toast(`${CFG.appName} sauvegardé sur Google Drive.`);return wrapper}
-async function importCloud(cloud){if(!cloud?.payload)throw new Error('La sauvegarde cloud ne contient aucune donnée.');applyingCloud=true;try{originalSetItem.call(localStorage,CFG.storageKey,JSON.stringify(cloud.payload));writeMeta({dirty:false,lastLocalChange:cloud.updatedAt||nowIso(),lastCloudRevision:Number(cloud.revision)||0,lastCloudHash:cloud.payloadHash||await hashPayload(cloud.payload),lastSyncAt:nowIso()});sessionStorage.setItem(`bg-drive-imported:${CFG.appId}`,'1');sessionStorage.setItem(`bg-drive-reconnect:${CFG.appId}`,'1');toast('Sauvegarde Drive plus récente importée. Actualisation…',1800);setTimeout(()=>location.reload(),900)}finally{applyingCloud=false}}
-async function syncNow({reason='manuel'}={}){
-  if(syncing||!accessToken||!navigator.onLine)return;
-  syncing=true;setStatus('busy','Synchronisation avec Google Drive…');
-  try{
-    const local=readPayload();if(!local)throw new Error('Aucune donnée locale trouvée.');
-    const localHash=await hashPayload(local);const meta=readMeta();const cloud=await readCloud();
-    if(!cloud){await uploadLocal(null);return}
-    const cloudHash=cloud.payloadHash||await hashPayload(cloud.payload);
-    if(localHash===cloudHash){writeMeta({dirty:false,lastCloudRevision:Number(cloud.revision)||0,lastCloudHash:cloudHash,lastSyncAt:nowIso(),lastLocalChange:cloud.updatedAt||meta.lastLocalChange||deriveTimestamp(local)||nowIso()});setStatus('ok','Google Drive synchronisé');return}
-    const localChanged=Date.parse(meta.lastLocalChange||deriveTimestamp(local)||0)||0;
-    const cloudChanged=Date.parse(cloud.updatedAt||0)||0;
-    const cloudAdvanced=Number(cloud.revision||0)>Number(meta.lastCloudRevision||0);
-    if(meta.dirty&&cloudAdvanced){setStatus('conflict','Conflit entre cet appareil et Google Drive');const replace=confirm(`Une sauvegarde ${CFG.appName} plus récente existe sur Google Drive, mais cet appareil contient aussi des modifications non envoyées.\n\nOK : utiliser la version Drive (vos modifications locales seront d’abord sauvegardées dans « Restaurer la dernière sauvegarde »).\nAnnuler : ne rien écraser pour le moment.`);if(replace){try{originalSetItem.call(localStorage,'memoire-famille-backup',JSON.stringify(local))}catch(e){console.error('Sauvegarde locale avant conflit impossible',e)}await importCloud(cloud)}else toast('Conflit conservé : aucune version n’a été écrasée.',5000);return}
-    if(!meta.dirty&&cloudChanged>=localChanged){await importCloud(cloud);return}
-    if(meta.dirty||localChanged>cloudChanged){await uploadLocal(cloud);return}
-  }catch(error){console.error('Synchronisation Drive',error);setStatus(navigator.onLine?'error':'offline',navigator.onLine?'Erreur Drive — cliquer pour reconnecter':'Hors connexion');toast(`Synchronisation impossible : ${error.message}`,5000)}finally{syncing=false}
-}
-function markDirty(){if(applyingCloud)return;writeMeta({dirty:true,lastLocalChange:nowIso()});setStatus(accessToken?'busy':'offline',accessToken?'Modifications en attente d’envoi':'Drive non connecté — modifications conservées localement');clearTimeout(changeTimer);changeTimer=setTimeout(()=>syncNow({reason:'modification'}),5000)}
-Storage.prototype.setItem=function(key,value){const result=originalSetItem.apply(this,arguments);if(this===localStorage&&key===CFG.storageKey)markDirty();return result};
-window.addEventListener('storage',e=>{if(e.key===CFG.storageKey)markDirty()});
-window.addEventListener('online',()=>{setStatus(accessToken?'busy':'offline',accessToken?'Connexion revenue — synchronisation…':'Reconnecter Google Drive');if(accessToken)syncNow({reason:'retour-en-ligne'})});
-window.addEventListener('offline',()=>setStatus('offline','Hors connexion — sauvegarde locale active'));
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&accessToken)syncNow({reason:'retour-page'})});
-setInterval(()=>{if(accessToken)syncNow({reason:'controle-15-minutes'})},CFG.intervalMs);
-async function boot(){installButton();const imported=sessionStorage.getItem(`bg-drive-imported:${CFG.appId}`);if(imported){sessionStorage.removeItem(`bg-drive-imported:${CFG.appId}`);toast('La sauvegarde Google Drive la plus récente est chargée.')}const reconnect=sessionStorage.getItem(`bg-drive-reconnect:${CFG.appId}`);if(reconnect){sessionStorage.removeItem(`bg-drive-reconnect:${CFG.appId}`);await sleep(700);connectDrive(true)}}
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
-window.BureauGenealogiqueDrive={connect:connectDrive,sync:syncNow,status:()=>({connected:!!accessToken,meta:readMeta(),file:cloudFile})};
-})();
-</script>
+
 
 <script src="lenaic-bus.js?v=2"></script>
 <script src="lenaic-integration.js?v=2"></script>
