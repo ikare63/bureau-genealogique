@@ -1563,6 +1563,18 @@ header.suite-header > .sister-nav{
 .first-name-sex-hint[data-status="ambiguous"] .badge{border-color:var(--warn);color:var(--warn)}
 .first-name-sex-hint[data-status="unknown"] .badge{border-color:var(--muted);color:var(--muted)}
 
+
+/* Scriptoria 3.7.2 — synchronisation GitHub / dépôt data / scriptoria.json */
+.github-sync-btn{position:relative}
+.github-sync-btn::after{content:"";position:absolute;right:3px;bottom:3px;width:9px;height:9px;border-radius:50%;border:2px solid var(--panel,#fff);background:#d58a00}
+.github-sync-btn[data-sync-state="ok"]::after{background:#178f4b}
+.github-sync-btn[data-sync-state="dirty"]::after{background:#d58a00}
+.github-sync-btn[data-sync-state="error"]::after{background:#c7332b}
+.github-sync-btn[data-sync-state="offline"]::after{background:#777}
+.github-sync-btn[data-sync-state="busy"]::after{background:#d58a00;animation:githubSyncPulse 1s infinite}
+@keyframes githubSyncPulse{50%{opacity:.35}}
+.github-sync-help{font-size:.82rem;color:var(--muted);line-height:1.45;margin:.25rem 0 .8rem}
+.github-sync-help code{font-size:.92em}
 </style>
 </head>
 <body>
@@ -1578,6 +1590,7 @@ header.suite-header > .sister-nav{
     <div class="header-actions" aria-label="Actions rapides">
       <button class="header-icon-btn" type="button" data-action="export-json" aria-label="Exporter la sauvegarde JSON" title="Exporter"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/></svg></button>
       <button class="header-icon-btn" type="button" data-action="open-import" aria-label="Importer une sauvegarde JSON" title="Importer"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></svg></button>
+      <button class="header-icon-btn github-sync-btn" type="button" data-action="github-sync" aria-label="Synchroniser scriptoria.json avec le dépôt data" title="Synchroniser scriptoria.json avec le dépôt data"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7h8"/><path d="M12 3v8"/><path d="m9 6 3-3 3 3"/><path d="M6 13v5a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-5"/></svg></button>
       <button class="theme-btn" id="themeToggle" type="button" data-action="toggle-theme" aria-label="Activer le mode sombre" title="Changer de thème">◐</button>
     </div>
   </div>
@@ -1609,9 +1622,12 @@ header.suite-header > .sister-nav{
 (() => {
 'use strict';
 
-const APP_VERSION='3.6.1';
-const LS_KEY='scriptoria-data';
+const APP_VERSION='3.7.2';
+const LS_KEY='scriptoria-data'; // clé historique, utilisée uniquement pour la migration puis supprimée
 const BACKUP_KEY='scriptoria-backup';
+const REPO_DATA_FILE='scriptoria.json';
+const GITHUB_META_KEY='scriptoria-github-sync-v2';
+const GITHUB_TOKEN_SESSION_KEY='scriptoria-github-token-v2';
 const DB_NAME='scriptoria-files';
 const DB_VERSION=2;
 const FILE_STORE='files';
@@ -1742,11 +1758,13 @@ function indicator(text,error=false){
  el.style.color=error?'#9d1c1c':'';
 }
 function loadState(){
+ // Compatibilité de migration : au tout premier lancement de la v3.7,
+ // on peut encore démarrer depuis l'ancien gros scriptoria-data.
  try{
   const raw=localStorage.getItem(LS_KEY);
   if(!raw)return DEFAULT_STATE();
   return migrate(JSON.parse(raw));
- }catch(e){console.error(e); return DEFAULT_STATE()}
+ }catch(e){console.error(e);return DEFAULT_STATE()}
 }
 function migrate(s){
  const base=DEFAULT_STATE(); s=s&&typeof s==='object'?s:{};
@@ -1762,48 +1780,121 @@ function compactValueForStorage(value){
  return value;
 }
 function storageSizeBytes(value){try{return new Blob([value]).size}catch{return value.length*2}}
+function readGithubMeta(){try{return JSON.parse(localStorage.getItem(GITHUB_META_KEY)||'{}')}catch{return{}}}
+function writeGithubMeta(patch){const next={...readGithubMeta(),...patch};localStorage.setItem(GITHUB_META_KEY,JSON.stringify(next));refreshGithubSyncStatus();return next}
+function todayISO(){return new Date().toISOString().slice(0,10)}
+function markGithubDirty(){const meta=readGithubMeta();writeGithubMeta({dirty:true,lastLocalChange:state.metadata?.updatedAt||now(),lastSyncDate:meta.lastSyncDate||''})}
+function getGithubToken(){return sessionStorage.getItem(GITHUB_TOKEN_SESSION_KEY)||''}
+function setGithubToken(token){if(token)sessionStorage.setItem(GITHUB_TOKEN_SESSION_KEY,token);else sessionStorage.removeItem(GITHUB_TOKEN_SESSION_KEY)}
+function detectGithubContext(){
+ const saved=readGithubMeta();
+ const m=location.hostname.match(/^([^.]+)\.github\.io$/i);
+ const owner=saved.owner||m?.[1]||'ikare63';
+ return{
+  owner,
+  repo:saved.repo||'data',
+  branch:saved.branch||'main',
+  path:saved.path||REPO_DATA_FILE
+ };
+}
+function refreshGithubSyncStatus(){
+ const b=document.querySelector('.github-sync-btn');if(!b)return;
+ const meta=readGithubMeta();
+ const current=meta.lastSyncDate===todayISO()&&!meta.dirty;
+ b.dataset.syncState=!navigator.onLine?'offline':current?'ok':meta.dirty?'dirty':'dirty';
+ const title=!navigator.onLine?'GitHub — hors connexion':current?`GitHub synchronisé aujourd’hui${meta.lastSyncAt?' · '+new Date(meta.lastSyncAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}`:'GitHub — sauvegarde scriptoria.json à effectuer';
+ b.title=title;b.setAttribute('aria-label',title);
+}
+async function textToBase64(text){
+ return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]||'');r.onerror=()=>reject(r.error);r.readAsDataURL(new Blob([text],{type:'application/json;charset=utf-8'}))});
+}
+function base64ToText(b64){
+ const bin=atob((b64||'').replace(/\n/g,'')),bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);return new TextDecoder().decode(bytes);
+}
+async function githubApi(url,options={}){
+ const token=getGithubToken();if(!token)throw new Error('Aucun jeton GitHub fourni.');
+ const headers=new Headers(options.headers||{});headers.set('Accept','application/vnd.github+json');headers.set('Authorization',`Bearer ${token}`);headers.set('X-GitHub-Api-Version','2022-11-28');
+ const res=await fetch(url,{...options,headers});
+ if(res.status===401||res.status===403)throw new Error('Jeton GitHub refusé ou permission Contents insuffisante.');
+ return res;
+}
+async function readGithubRepoDocument(cfg){
+ const api=`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;
+ const metaRes=await githubApi(api);
+ if(metaRes.status===404)return{sha:'',doc:null};
+ if(!metaRes.ok)throw new Error(`Lecture GitHub impossible (${metaRes.status}).`);
+ const info=await metaRes.json();
+ let text='';
+ if(info.content)text=base64ToText(info.content);
+ else{
+  const rawRes=await githubApi(api,{headers:{Accept:'application/vnd.github.raw'}});
+  if(!rawRes.ok)throw new Error(`Lecture de scriptoria.json impossible (${rawRes.status}).`);
+  text=await rawRes.text();
+ }
+ let doc={};try{doc=JSON.parse(text)}catch{throw new Error('Le scriptoria.json présent sur GitHub est illisible.');}
+ return{sha:info.sha||'',doc};
+}
+function extractScriptoriaStateFromRepo(doc){
+ // Format courant : scriptoria.json contient directement l'état Scriptoria.
+ if(doc&&Array.isArray(doc.records)&&Array.isArray(doc.people))return doc;
+ // Compatibilité avec les essais précédents (data.json enveloppé).
+ if(doc?.scriptoria&&Array.isArray(doc.scriptoria.records))return doc.scriptoria;
+ if(doc?.data&&Array.isArray(doc.data.records))return doc.data;
+ return null;
+}
+async function loadGithubState(remoteState,cfg,remoteSha=''){
+ backupText();state=migrate(remoteState);const serialized=JSON.stringify(compactValueForStorage(state));await persistStateToIndexedDB(serialized);
+ state.metadata=state.metadata||{};state.metadata.lastGithubSyncAt=now();
+ writeGithubMeta({owner:cfg.owner,repo:cfg.repo,branch:cfg.branch,path:cfg.path,dirty:false,lastSyncAt:state.metadata.lastGithubSyncAt,lastSyncDate:todayISO(),lastRemoteSha:remoteSha});
+ renderNav();renderMain();indicator('Restauré depuis GitHub');toast('La version GitHub de Scriptoria a été chargée.');refreshStorageInfo();return true;
+}
+async function githubSyncCurrentState(options={}){
+ if(!navigator.onLine)throw new Error('Connexion Internet indisponible.');
+ const cfg={...detectGithubContext(),...(options.config||{})};
+ if(!cfg.owner||!cfg.repo)throw new Error('Dépôt GitHub non renseigné.');
+ const b=document.querySelector('.github-sync-btn');if(b)b.dataset.syncState='busy';
+ const remote=await readGithubRepoDocument(cfg),remoteState=extractScriptoriaStateFromRepo(remote.doc);
+ const localTime=stateFreshness(state),remoteTime=stateFreshness(remoteState||{});
+ const localHasData=(state.records?.length||0)+(state.people?.length||0)+(state.families?.length||0)>0;
+ const remoteHasData=!!remoteState&&((remoteState.records?.length||0)+(remoteState.people?.length||0)+(remoteState.families?.length||0)>0);
+ if(remoteHasData&&(!localHasData||remoteTime>localTime)){
+  const msg=!localHasData?'Une sauvegarde Scriptoria existe déjà dans ce dépôt GitHub. La charger sur cet appareil ?':`La version GitHub semble plus récente (${new Date(remoteTime).toLocaleString('fr-FR')}) que la copie locale (${new Date(localTime).toLocaleString('fr-FR')}).\n\nOK : charger GitHub.\nAnnuler : ne rien écraser.`;
+  if(confirm(msg))return loadGithubState(remoteState,cfg,remote.sha);
+  refreshGithubSyncStatus();toast('Aucune version n’a été écrasée.');return false;
+ }
+ const syncAt=now(),payload=clone(state);payload.metadata=payload.metadata||{};payload.metadata.lastGithubSyncAt=syncAt;
+ // Un dépôt "data", un fichier par application : Scriptoria écrit directement son état complet.
+ const json=JSON.stringify(payload,null,2),content=await textToBase64(json);
+ const api=`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}`;
+ const body={message:`Scriptoria — sauvegarde ${todayISO()}`,content,branch:cfg.branch};if(remote.sha)body.sha=remote.sha;
+ const res=await githubApi(api,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ if(!res.ok){let detail='';try{detail=(await res.json())?.message||''}catch{}throw new Error(detail||`Écriture GitHub impossible (${res.status}).`)}
+ const result=await res.json();state.metadata.lastGithubSyncAt=syncAt;
+ writeGithubMeta({owner:cfg.owner,repo:cfg.repo,branch:cfg.branch,path:cfg.path,dirty:false,lastSyncAt:syncAt,lastSyncDate:todayISO(),lastCommitSha:result.commit?.sha||''});
+ localStorage.setItem(SCRIPTORIA_EXPORT_COUNT_KEY,'0');updateScriptoriaExportAlert();await persistStateToIndexedDB(JSON.stringify(compactValueForStorage(state)));
+ indicator(`Enregistré · GitHub ${new Date(syncAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}`);if(!options.silent)toast('Scriptoria sauvegardé dans data/scriptoria.json.');refreshStorageInfo();return true;
+}
+function openGithubSyncModal(){
+ const cfg=detectGithubContext(),hasToken=!!getGithubToken();
+ openModal('Synchroniser avec GitHub',`<form id="githubSyncForm"><div class="github-sync-help">Scriptoria travaille dans IndexedDB et synchronise son état complet dans <code>ikare63/data/${esc(cfg.path)}</code>. Le dépôt <code>data</code> doit rester privé. Le jeton GitHub n’est conservé que pendant cette session du navigateur.</div><div class="form-grid"><div class="field"><label>Propriétaire</label><input name="owner" value="${esc(cfg.owner)}" required></div><div class="field"><label>Dépôt</label><input name="repo" value="${esc(cfg.repo)}" required></div><div class="field"><label>Branche</label><input name="branch" value="${esc(cfg.branch)}" required></div><div class="field"><label>Chemin du JSON</label><input name="path" value="${esc(cfg.path)}" required></div><div class="field wide"><label>Jeton GitHub à portée fine</label><input type="password" name="token" value="" ${hasToken?'placeholder="Jeton déjà chargé pour cette session"':'required placeholder="github_pat_…"'} autocomplete="off"><span class="help">Permission minimale : Contents — Read and write, uniquement pour ce dépôt.</span></div></div><div class="toolbar"><button class="primary" type="submit">Synchroniser maintenant</button><button type="button" data-close-modal>Annuler</button></div></form>`);
+}
 function saveState(immediate=false,dataChanged=true){
  indicator('Enregistrement en cours');clearTimeout(saveTimer);
- const run=()=>{
+ const run=async()=>{
   if(dataChanged)state.metadata.updatedAt=now();
-  const compact=compactValueForStorage(state);
-  const serialized=JSON.stringify(compact);
-  let localSaved=false;
+  const compact=compactValueForStorage(state),serialized=JSON.stringify(compact);
   try{
-   localStorage.setItem(LS_KEY,serialized);
-   localSaved=true;
-  }catch(e){
-   const quota=e?.name==='QuotaExceededError'||e?.code===22||e?.code===1014;
-   if(quota){
-    // Les anciennes sauvegardes dupliquaient tout le JSON dans localStorage.
-    // On libère cet espace puis on retente une seule fois.
-    try{localStorage.removeItem(BACKUP_KEY);localStorage.setItem(LS_KEY,serialized);localSaved=true}catch(retryError){console.warn('localStorage toujours saturé',retryError)}
-   }else console.error(e);
-  }
-  persistStateToIndexedDB(serialized).then(()=>{
+   await persistStateToIndexedDB(serialized);
    const size=(storageSizeBytes(serialized)/1024/1024).toFixed(2);
-   indicator(localSaved?`Enregistré · ${size} Mo`:`Enregistré durablement · ${size} Mo`);
-  }).catch(error=>{
-   console.error('Sauvegarde IndexedDB',error);
-   if(!localSaved){indicator('Erreur de sauvegarde',true);toast(`Sauvegarde impossible : ${error?.message||'cause inconnue'}`)}
-  });
-  if(dataChanged){reminderSnoozedUntil=0;updateSaveReminder()}
+   indicator(`Enregistré localement · ${size} Mo`);
+   if(dataChanged){markGithubDirty();reminderSnoozedUntil=0;updateSaveReminder()}
+  }catch(error){console.error('Sauvegarde IndexedDB',error);indicator('Erreur de sauvegarde',true);toast(`Sauvegarde impossible : ${error?.message||'cause inconnue'}`)}
  };
  immediate?run():saveTimer=setTimeout(run,180);
 }
-function externalBackupCurrent(){const u=Date.parse(state.metadata.updatedAt||0)||0,j=Date.parse(state.metadata.lastJsonExportAt||0)||0,f=Date.parse(state.metadata.lastJsonExportAt||0)||0;return Math.max(j,f)>=u}
-function updateSaveReminder(force=false){updateScriptoriaExportAlert()}
-function hideSaveReminder(){}
-function exportFileName(prefix){const d=new Date(),date=d.toISOString().slice(0,10);const last=prefix.includes('sauvegarde-complete')?state.metadata.lastJsonExportAt:state.metadata.lastJsonExportAt;if(last&&safe(last).slice(0,10)===date)return `${prefix}-${date}-${String(d.getHours()).padStart(2,'0')}-${String(d.getMinutes()).padStart(2,'0')}.json`;return `${prefix}-${date}.json`}
-function backupText(){
- try{
-  const compact=compactValueForStorage(state);
-  const serialized=JSON.stringify(compact);
-  const stamp=now();
-  idbBackupPut({id:LATEST_BACKUP_ID,createdAt:stamp,payload:serialized}).catch(e=>console.error('Sauvegarde de sécurité IndexedDB',e));
-  idbBackupPut({id:`snapshot_${stamp}`,createdAt:stamp,payload:serialized}).then(pruneBackupSnapshots).catch(e=>console.error('Historique de sauvegarde IndexedDB',e));
-  return true;
- }catch(e){console.error(e);return false}
+function externalBackupCurrent(){
+ const u=Date.parse(state.metadata.updatedAt||0)||0,j=Date.parse(state.metadata.lastJsonExportAt||0)||0,g=Date.parse(readGithubMeta().lastSyncAt||0)||0;
+ return Math.max(j,g)>=u;
 }
 function clone(v){return JSON.parse(JSON.stringify(v))}
 function byId(arr,id){return arr.find(x=>x.id===id)}
@@ -6541,15 +6632,32 @@ async function pruneBackupSnapshots(){
 async function persistStateToIndexedDB(serialized){
  await idbBackupPut({id:PRIMARY_STATE_ID,updatedAt:state.metadata?.updatedAt||now(),payload:serialized});
 }
-async function hydrateStateFromIndexedDB(){
- const saved=await idbBackupGet(PRIMARY_STATE_ID).catch(()=>null);
- if(!saved?.payload)return false;
- let incoming;try{incoming=JSON.parse(saved.payload)}catch{return false}
- const localTime=Date.parse(state.metadata?.updatedAt||0)||0;
- const idbTime=Date.parse(incoming.metadata?.updatedAt||saved.updatedAt||0)||0;
- const localRaw=localStorage.getItem(LS_KEY);
- if(!localRaw||idbTime>localTime){state=migrate(incoming);return true}
- return false;
+function stateFreshness(value){
+ const v=value?.scriptoria||value?.data||value;
+ return Date.parse(v?.metadata?.updatedAt||v?.metadata?.lastGithubSyncAt||v?.export?.exportedAt||value?.updatedAt||0)||0;
+}
+async function fetchRepoDataJson(){
+ // En v3.7.2, scriptoria.json vit dans le dépôt privé « data » et n'est jamais lu via GitHub Pages.
+ return null;
+}
+async function bootstrapStateSources(){
+ const legacyRaw=localStorage.getItem(LS_KEY);
+ let legacy=null;if(legacyRaw){try{legacy=migrate(JSON.parse(legacyRaw))}catch(e){console.warn('Ancien scriptoria-data illisible',e)}}
+ const saved=await idbBackupGet(PRIMARY_STATE_ID).catch(()=>null);let idbState=null;if(saved?.payload){try{idbState=migrate(JSON.parse(saved.payload))}catch(e){console.warn('État IndexedDB illisible',e)}}
+ const repoState=await fetchRepoDataJson();
+ const candidates=[legacy&&{source:'ancien localStorage',state:legacy,priority:2},idbState&&{source:'IndexedDB',state:idbState,priority:3},repoState&&{source:'scriptoria.json',state:repoState,priority:1}].filter(Boolean);
+ if(candidates.length){candidates.sort((a,b)=>(stateFreshness(b.state)-stateFreshness(a.state))||(b.priority-a.priority));state=migrate(candidates[0].state)}
+ else state=DEFAULT_STATE();
+ const serialized=JSON.stringify(compactValueForStorage(state));
+ await persistStateToIndexedDB(serialized);
+ const verify=await idbBackupGet(PRIMARY_STATE_ID);
+ if(!verify?.payload||verify.payload!==serialized)throw new Error('Vérification IndexedDB impossible : ancienne copie conservée.');
+ if(legacyRaw){
+  const stamp=now();await idbBackupPut({id:`legacy_localstorage_${stamp}`,createdAt:stamp,payload:legacyRaw});await idbBackupPut({id:LATEST_BACKUP_ID,createdAt:stamp,payload:legacyRaw});
+  localStorage.removeItem(LS_KEY);
+ }
+ localStorage.removeItem('bg-drive-sync-meta:scriptoria');
+ return candidates[0]?.source||'nouvel état';
 }
 async function migrateLegacyLocalBackup(){
  const raw=localStorage.getItem(BACKUP_KEY);
@@ -8006,6 +8114,7 @@ document.addEventListener('click',async e=>{
   setTimeout(()=>document.querySelector('[data-action="import-json"]')?.click(),50);
   return;
  }
+ if(action==='github-sync'){openGithubSyncModal();return}
  if(action==='new-person')openPersonForm();
   if(action==='edit-person')openPersonForm(byId(state.people,id));
   if(action==='view-person')viewPerson(id);
@@ -8252,6 +8361,14 @@ document.addEventListener('input',e=>{
 });
 document.addEventListener('submit',async e=>{
  e.preventDefault();const f=e.target;
+ if(f.id==='githubSyncForm'){
+  try{
+   const fd=new FormData(f),token=safe(fd.get('token')).trim();if(token)setGithubToken(token);
+   const config={owner:safe(fd.get('owner')).trim(),repo:safe(fd.get('repo')).trim(),branch:safe(fd.get('branch')).trim()||'main',path:safe(fd.get('path')).trim()||REPO_DATA_FILE};
+   writeGithubMeta(config);await githubSyncCurrentState({config});closeModal();
+  }catch(err){console.error(err);const b=document.querySelector('.github-sync-btn');if(b)b.dataset.syncState='error';toast(`GitHub : ${err.message}`,5500)}
+  return;
+ }
  if(f.id==='yearNoteForm'){const year=f.dataset.year,fd=new FormData(f);state.settings.registerYearNotes=state.settings.registerYearNotes||{};state.settings.registerYearNotes[year]={note:safe(fd.get('note')),status:safe(fd.get('status'))||'observée',complete:fd.get('complete')==='on'};saveState(true);closeModal();renderMain();toast(`Année ${year} mise à jour`);return}
  try{
   if(f.id==='recordStep1'){const o=formDataObject(f);const reg=byId(state.registers,o.registerId);o.commune=o.commune||inferRegisterLocation(reg);o.registerPeriod=o.registerPeriod||inferRegisterPeriod(reg);if(!o.recordNumber)o.recordNumber=nextRecordNumber(o.registerId);if(!o.date)o.date=lastRecordDate(o.registerId);const fields={};if(o.type==='baptisme')fields.baptismDate=o.date;if(o.type==='sepulture')fields.burialDate=o.date;openRecordFullForm({...o,fields})}
@@ -8284,6 +8401,8 @@ document.addEventListener('submit',async e=>{
 });
 document.getElementById('modal').addEventListener('click',e=>{if(e.target.id==='modal')closeModal()});
 window.addEventListener('beforeunload',()=>saveState(true,false));
+window.addEventListener('online',refreshGithubSyncStatus);
+window.addEventListener('offline',refreshGithubSyncStatus);
 
 
 function normalizeExistingHistoricalNames(){
@@ -9025,15 +9144,17 @@ async function init(){
  try{
   await initDB();
   await migrateLegacyLocalBackup();
-  const restored=await hydrateStateFromIndexedDB();
-  if(restored)toast('Dernière sauvegarde locale restaurée automatiquement.');
- }catch(e){console.error(e);toast('IndexedDB indisponible : la sauvegarde durable et les fichiers locaux sont désactivés')}
+  const source=await bootstrapStateSources();
+  if(source==='ancien localStorage')toast('Migration réussie : Scriptoria travaille maintenant dans IndexedDB.');
+  else if(source==='scriptoria.json')toast('Scriptoria initialisé depuis scriptoria.json.');
+ }catch(e){console.error(e);toast(`Initialisation du stockage impossible : ${e.message}`)}
  applyTheme(state.settings?.theme||'light');
  rebuildEntitiesFromExistingRecords();
  currentTab=state.settings.lastTab==='pages'?'registers':(state.settings.lastTab||'dashboard');
  renderNav();renderMain();
- // Force une copie durable après migration/nettoyage, même si localStorage est proche de sa limite.
+ // IndexedDB est désormais la copie de travail ; localStorage ne contient plus la base Scriptoria.
  saveState(true,false);
+ refreshGithubSyncStatus();
  if(currentTab==='registers'&&currentSectionView('registers')==='pages')loadThumbs();
  if(navigator.storage?.estimate){const est=await navigator.storage.estimate();if(est.quota&&est.usage/est.quota>.85)toast('Attention : le stockage du navigateur est presque plein')}
  updateSaveReminder();
@@ -9062,97 +9183,6 @@ homonymObserver.observe(document.body,{childList:true,subtree:true});
 
 setTimeout(updateScriptoriaExportAlert,0);
 </script>
-<style id="bg-drive-sync-style">
-.bg-drive-btn{position:relative}
-.bg-drive-btn[data-cloud-state="ok"]::after,.bg-drive-btn[data-cloud-state="busy"]::after,.bg-drive-btn[data-cloud-state="error"]::after,.bg-drive-btn[data-cloud-state="offline"]::after,.bg-drive-btn[data-cloud-state="conflict"]::after{content:"";position:absolute;right:3px;bottom:3px;width:9px;height:9px;border-radius:50%;border:2px solid var(--panel,#fff);background:#178f4b}
-.bg-drive-btn[data-cloud-state="busy"]::after{background:#d58a00;animation:bgCloudPulse 1s infinite}
-.bg-drive-btn[data-cloud-state="error"]::after,.bg-drive-btn[data-cloud-state="conflict"]::after{background:#c7332b}
-.bg-drive-btn[data-cloud-state="offline"]::after{background:#777}
-@keyframes bgCloudPulse{50%{opacity:.35}}
-</style>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
-<script id="bg-drive-sync-script">
-(()=>{
-'use strict';
-const CFG={
-  clientId:'595271487480-al28mer61ta0qounhuhui0gvfb7hibpa.apps.googleusercontent.com',
-  appId:'scriptoria',
-  appName:'Scriptoria',
-  storageKey:'scriptoria-data',
-  fileName:'Bureau genealogique - Scriptoria.json',
-  scope:'https://www.googleapis.com/auth/drive.file',
-  intervalMs:15*60*1000
-};
-const META_KEY=`bg-drive-sync-meta:${CFG.appId}`;
-const DEVICE_KEY='bg-drive-device-id';
-let tokenClient=null,accessToken='',cloudFile=null,syncing=false,applyingCloud=false,changeTimer=null;
-const originalSetItem=Storage.prototype.setItem;
-const nowIso=()=>new Date().toISOString();
-const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-function getDeviceId(){let id=localStorage.getItem(DEVICE_KEY);if(!id){id=`device_${Date.now()}_${Math.random().toString(36).slice(2,9)}`;originalSetItem.call(localStorage,DEVICE_KEY,id)}return id}
-function readMeta(){try{return JSON.parse(localStorage.getItem(META_KEY)||'{}')}catch{return{}}}
-function writeMeta(patch){const next={...readMeta(),...patch};originalSetItem.call(localStorage,META_KEY,JSON.stringify(next));return next}
-function readPayload(){const raw=localStorage.getItem(CFG.storageKey);if(!raw)return null;try{return JSON.parse(raw)}catch{return null}}
-function stableString(value){if(value===null||typeof value!=='object')return JSON.stringify(value);if(Array.isArray(value))return'['+value.map(stableString).join(',')+']';return'{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stableString(value[k])).join(',')+'}'}
-async function hashPayload(value){const bytes=new TextEncoder().encode(stableString(value));const digest=await crypto.subtle.digest('SHA-256',bytes);return[...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('')}
-function deriveTimestamp(obj){const candidates=[];const visit=(v,depth=0)=>{if(depth>5||v==null)return;if(Array.isArray(v)){v.slice(0,100).forEach(x=>visit(x,depth+1));return}if(typeof v==='object'){for(const[k,x]of Object.entries(v)){if(/^(updatedAt|modifiedAt|savedAt|createdAt|timestamp)$/i.test(k)&&typeof x==='string'){const t=Date.parse(x);if(Number.isFinite(t))candidates.push(t)}visit(x,depth+1)}}};visit(obj);return candidates.length?new Date(Math.max(...candidates)).toISOString():''}
-function button(){return document.querySelector('.bg-drive-btn')}
-function setStatus(state,title){const b=button();if(!b)return;b.dataset.cloudState=state;b.title=title;b.setAttribute('aria-label',title)}
-function installButton(){if(button())return;const host=document.querySelector('.header-actions')||document.querySelector('.brand')||document.body;const b=document.createElement('button');b.type='button';b.className='bg-drive-btn header-icon-btn icon-action btn';b.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true" style="width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round"><path d="M7 18h10a4 4 0 0 0 .7-7.94A6 6 0 0 0 6.2 8.5 4.5 4.5 0 0 0 7 18Z"/><path d="M12 12v7"/><path d="m9 15 3-3 3 3"/></svg>';b.addEventListener('click',connectDrive);host.insertBefore(b,host.lastElementChild||null);setStatus(navigator.onLine?'offline':'offline','Connecter Google Drive')}
-function waitForGoogle(){return new Promise(async(resolve,reject)=>{for(let i=0;i<80;i++){if(window.google?.accounts?.oauth2)return resolve();await sleep(100)}reject(new Error('Le service de connexion Google ne s’est pas chargé.'))})}
-async function initTokenClient(){if(tokenClient)return;await waitForGoogle();tokenClient=google.accounts.oauth2.initTokenClient({client_id:CFG.clientId,scope:CFG.scope,callback:()=>{}})}
-async function requestToken(prompt='consent'){
-  await initTokenClient();
-  return new Promise((resolve,reject)=>{
-    tokenClient.callback=response=>{if(response?.error)return reject(new Error(response.error_description||response.error));accessToken=response.access_token||'';resolve(accessToken)};
-    tokenClient.error_callback=err=>reject(new Error(err?.message||'Connexion Google annulée'));
-    tokenClient.requestAccessToken({prompt});
-  });
-}
-async function connectDrive(silent=false){
-  if(!navigator.onLine){setStatus('offline','Hors connexion');toast('Connexion Internet indisponible.');return}
-  try{setStatus('busy','Connexion à Google Drive…');await requestToken(silent?'':'consent');setStatus('busy','Synchronisation avec Google Drive…');await syncNow({reason:'connexion'});if(accessToken)setStatus('ok','Google Drive synchronisé');}
-  catch(error){console.error('Google Drive',error);accessToken='';setStatus('error','Reconnecter Google Drive');if(!silent)toast(`Connexion Drive impossible : ${error.message}`)}
-}
-async function driveFetch(url,options={}){if(!accessToken)throw new Error('Google Drive n’est pas connecté.');const headers=new Headers(options.headers||{});headers.set('Authorization',`Bearer ${accessToken}`);const response=await fetch(url,{...options,headers});if(response.status===401){accessToken='';setStatus('error','Reconnecter Google Drive');throw new Error('Autorisation Google expirée. Reconnecte Drive.')}if(!response.ok){let msg='';try{msg=(await response.json())?.error?.message||''}catch{}throw new Error(msg||`Erreur Drive ${response.status}`)}return response}
-function q(value){return value.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-async function findCloudFile(){const params=new URLSearchParams({q:`name='${q(CFG.fileName)}' and trashed=false`,spaces:'drive',fields:'files(id,name,modifiedTime,createdTime,size)',orderBy:'modifiedTime desc',pageSize:'10'});const res=await driveFetch(`https://www.googleapis.com/drive/v3/files?${params}`);const json=await res.json();cloudFile=json.files?.[0]||null;return cloudFile}
-async function readCloud(){const file=await findCloudFile();if(!file)return null;const res=await driveFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media`);const text=await res.text();try{return JSON.parse(text)}catch{throw new Error('La sauvegarde Drive est illisible.')}}
-async function createCloud(wrapper){const boundary='bg_'+Math.random().toString(36).slice(2);const metadata={name:CFG.fileName,mimeType:'application/json',appProperties:{bureauGenealogique:'1',application:CFG.appId}};const body=`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(wrapper)}\r\n--${boundary}--`;const res=await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,modifiedTime',{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body});cloudFile=await res.json();return cloudFile}
-async function updateCloud(wrapper){if(!cloudFile)await findCloudFile();if(!cloudFile)return createCloud(wrapper);const res=await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(cloudFile.id)}?uploadType=media&fields=id,name,modifiedTime`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(wrapper)});cloudFile=await res.json();return cloudFile}
-async function uploadLocal(existingCloud=null){const payload=readPayload();if(!payload)throw new Error(`Aucune donnée ${CFG.appName} à sauvegarder.`);const meta=readMeta();const hash=await hashPayload(payload);const revision=Math.max(Number(existingCloud?.revision)||0,Number(meta.lastCloudRevision)||0)+1;const wrapper={schema:'bureau-genealogique-drive-v1',application:CFG.appId,applicationName:CFG.appName,revision,updatedAt:nowIso(),deviceId:getDeviceId(),payloadHash:hash,payload};await updateCloud(wrapper);writeMeta({dirty:false,lastLocalChange:wrapper.updatedAt,lastCloudRevision:revision,lastCloudHash:hash,lastSyncAt:nowIso()});setStatus('ok',`Synchronisé avec Drive · ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}`);toast(`${CFG.appName} sauvegardé sur Google Drive.`);return wrapper}
-async function importCloud(cloud){if(!cloud?.payload)throw new Error('La sauvegarde cloud ne contient aucune donnée.');applyingCloud=true;try{originalSetItem.call(localStorage,CFG.storageKey,JSON.stringify(cloud.payload));writeMeta({dirty:false,lastLocalChange:cloud.updatedAt||nowIso(),lastCloudRevision:Number(cloud.revision)||0,lastCloudHash:cloud.payloadHash||await hashPayload(cloud.payload),lastSyncAt:nowIso()});sessionStorage.setItem(`bg-drive-imported:${CFG.appId}`,'1');sessionStorage.setItem(`bg-drive-reconnect:${CFG.appId}`,'1');toast('Sauvegarde Drive plus récente importée. Actualisation…',1800);setTimeout(()=>location.reload(),900)}finally{applyingCloud=false}}
-async function syncNow({reason='manuel'}={}){
-  if(syncing||!accessToken||!navigator.onLine)return;
-  syncing=true;setStatus('busy','Synchronisation avec Google Drive…');
-  try{
-    const local=readPayload();if(!local)throw new Error('Aucune donnée locale trouvée.');
-    const localHash=await hashPayload(local);const meta=readMeta();const cloud=await readCloud();
-    if(!cloud){await uploadLocal(null);return}
-    const cloudHash=cloud.payloadHash||await hashPayload(cloud.payload);
-    if(localHash===cloudHash){writeMeta({dirty:false,lastCloudRevision:Number(cloud.revision)||0,lastCloudHash:cloudHash,lastSyncAt:nowIso(),lastLocalChange:cloud.updatedAt||meta.lastLocalChange||deriveTimestamp(local)||nowIso()});setStatus('ok','Google Drive synchronisé');return}
-    const localChanged=Date.parse(meta.lastLocalChange||deriveTimestamp(local)||0)||0;
-    const cloudChanged=Date.parse(cloud.updatedAt||0)||0;
-    const cloudAdvanced=Number(cloud.revision||0)>Number(meta.lastCloudRevision||0);
-    if(meta.dirty&&cloudAdvanced){setStatus('conflict','Conflit entre cet appareil et Google Drive');const replace=confirm(`Une sauvegarde ${CFG.appName} plus récente existe sur Google Drive, mais cet appareil contient aussi des modifications non envoyées.\n\nOK : utiliser la version Drive.\nAnnuler : ne rien écraser pour le moment.`);if(replace)await importCloud(cloud);else toast('Conflit conservé : aucune version n’a été écrasée.',5000);return}
-    if(!meta.dirty&&cloudChanged>=localChanged){await importCloud(cloud);return}
-    if(meta.dirty||localChanged>cloudChanged){await uploadLocal(cloud);return}
-    await importCloud(cloud);
-  }catch(error){console.error('Synchronisation Drive',error);setStatus(navigator.onLine?'error':'offline',navigator.onLine?'Erreur Drive — cliquer pour reconnecter':'Hors connexion');toast(`Synchronisation impossible : ${error.message}`,5000)}finally{syncing=false}
-}
-function markDirty(){if(applyingCloud)return;writeMeta({dirty:true,lastLocalChange:nowIso()});setStatus(accessToken?'busy':'offline',accessToken?'Modifications en attente d’envoi':'Drive non connecté — modifications conservées localement');clearTimeout(changeTimer);changeTimer=setTimeout(()=>syncNow({reason:'modification'}),5000)}
-Storage.prototype.setItem=function(key,value){const result=originalSetItem.apply(this,arguments);if(this===localStorage&&key===CFG.storageKey)markDirty();return result};
-window.addEventListener('storage',e=>{if(e.key===CFG.storageKey)markDirty()});
-window.addEventListener('online',()=>{setStatus(accessToken?'busy':'offline',accessToken?'Connexion revenue — synchronisation…':'Reconnecter Google Drive');if(accessToken)syncNow({reason:'retour-en-ligne'})});
-window.addEventListener('offline',()=>setStatus('offline','Hors connexion — sauvegarde locale active'));
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&accessToken)syncNow({reason:'retour-page'})});
-setInterval(()=>{if(accessToken)syncNow({reason:'controle-15-minutes'})},CFG.intervalMs);
-async function boot(){installButton();const imported=sessionStorage.getItem(`bg-drive-imported:${CFG.appId}`);if(imported){sessionStorage.removeItem(`bg-drive-imported:${CFG.appId}`);toast('La sauvegarde Google Drive la plus récente est chargée.')}const reconnect=sessionStorage.getItem(`bg-drive-reconnect:${CFG.appId}`);if(reconnect){sessionStorage.removeItem(`bg-drive-reconnect:${CFG.appId}`);await sleep(700);connectDrive(true)}}
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
-window.BureauGenealogiqueDrive={connect:connectDrive,sync:syncNow,status:()=>({connected:!!accessToken,meta:readMeta(),file:cloudFile})};
-})();
-</script>
-
 <script src="lenaic-bus.js?v=2"></script>
 <script src="lenaic-integration.js?v=2"></script>
 </body>
