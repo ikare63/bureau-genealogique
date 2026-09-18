@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Mes données — Sauvegardes</title>
+<style>
+:root{
+  --bg:#f6f7f8;--panel:#fff;--text:#17191c;--muted:#6b7280;--line:#d9dde3;
+  --soft:#eef1f4;--ok:#2f7d4c;--warn:#b7791f;--danger:#b33a3a;--shadow:0 10px 30px rgba(0,0,0,.07)
+}
+html[data-theme="dark"]{
+  --bg:#111315;--panel:#1a1d21;--text:#f3f4f6;--muted:#aeb4bd;--line:#343a42;
+  --soft:#23272d;--ok:#63b27f;--warn:#ddb15d;--danger:#ed8585;--shadow:0 12px 36px rgba(0,0,0,.28)
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+button,input{font:inherit}
+button{cursor:pointer}
+header{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
+.topbar{max-width:980px;margin:auto;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:14px}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.logo{width:48px;height:48px;border-radius:14px;background:var(--text);color:var(--bg);display:grid;place-items:center;font-size:24px;flex:0 0 auto}
+h1{font-size:1.18rem;margin:0}.subtitle{margin:2px 0 0;color:var(--muted);font-size:.84rem}
+.actions{display:flex;gap:8px;align-items:center}
+.icon-btn,.btn{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:11px;padding:9px 12px;font-weight:750}
+.icon-btn{width:42px;height:42px;padding:0;display:grid;place-items:center;font-size:1.1rem}
+.btn.primary{background:var(--text);border-color:var(--text);color:var(--bg)}
+main{max-width:980px;margin:auto;padding:20px 16px 60px}
+.hero{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:16px}
+.hero h2{margin:0 0 5px;font-size:1.5rem}.hero p{margin:0;color:var(--muted);max-width:650px}
+.status-pill{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid var(--line);border-radius:999px;background:var(--panel);font-weight:800;white-space:nowrap}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--warn)}.dot.ok{background:var(--ok)}.dot.bad{background:var(--danger)}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow)}
+.card-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.app-name{display:flex;align-items:center;gap:9px}.emoji{font-size:1.45rem}.app-name h3{margin:0;font-size:1.05rem}
+.filename{margin:4px 0 0;color:var(--muted);font:600 .85rem ui-monospace,SFMono-Regular,Menlo,monospace}
+.file-state{font-size:.78rem;font-weight:800;padding:4px 7px;border-radius:999px;background:var(--soft);color:var(--muted)}
+.file-state.ok{color:var(--ok)}.file-state.bad{color:var(--danger)}
+.meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:14px 0}
+.meta-box{background:var(--soft);border-radius:10px;padding:9px 10px}.meta-box span{display:block;color:var(--muted);font-size:.74rem}.meta-box strong{display:block;margin-top:2px;font-size:.88rem;overflow:hidden;text-overflow:ellipsis}
+.card-actions{display:flex;gap:8px;flex-wrap:wrap}.card-actions .btn{flex:1 1 130px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}
+.notice{margin-top:16px;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--muted);font-size:.88rem}
+.modal-backdrop{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:16px}.modal-backdrop.open{display:flex}.modal{width:min(520px,100%);background:var(--panel);border:1px solid var(--line);border-radius:17px;box-shadow:0 30px 80px rgba(0,0,0,.3);padding:18px}.modal h2{margin:0 0 6px}.modal p{margin:0 0 14px;color:var(--muted)}.field{display:grid;gap:6px;margin-bottom:12px}.field label{font-weight:800}.field input{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:10px;padding:10px 11px}.modal-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.toast{position:fixed;left:50%;bottom:20px;z-index:200;transform:translateX(-50%);background:var(--text);color:var(--bg);border-radius:11px;padding:10px 14px;font-weight:750;opacity:0;pointer-events:none;transition:.2s;max-width:min(92vw,560px);text-align:center}.toast.show{opacity:1}
+@media(max-width:700px){.grid{grid-template-columns:1fr}.hero{flex-direction:column}.topbar{padding:11px 12px}.logo{width:44px;height:44px}.subtitle{display:none}.actions .btn-label{display:none}.actions .btn{padding:9px 10px}.meta{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">🗄️</div>
+      <div><h1>Mes données</h1><p class="subtitle">Sauvegardes privées de l’écosystème</p></div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="tokenBtn" type="button">🔑 <span class="btn-label">Jeton</span></button>
+      <button class="icon-btn" id="themeBtn" type="button" aria-label="Changer de thème" title="Changer de thème">◐</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <div>
+      <h2>Dépôt <code>ikare63/data</code></h2>
+      <p>Consulte et télécharge les sauvegardes JSON du dépôt privé, sans exposer les données dans cette page.</p>
+    </div>
+    <div class="status-pill"><span class="dot" id="repoDot"></span><span id="repoStatus">Connexion…</span></div>
+  </section>
+
+  <div class="toolbar">
+    <button class="btn primary" id="refreshBtn" type="button">Actualiser</button>
+    <button class="btn" id="downloadAllBtn" type="button">Télécharger les 5 JSON</button>
+    <button class="btn" id="openGithubBtn" type="button">Ouvrir le dépôt GitHub</button>
+  </div>
+
+  <section class="grid" id="cards"></section>
+
+  <div class="notice">
+    Le jeton GitHub n’est conservé que dans <strong>sessionStorage</strong>. Cette page essaie de réutiliser le même jeton de session que Scriptoria, Arboris, Pistoria, Ariane et Scribe.
+  </div>
+</main>
+
+<div class="modal-backdrop" id="tokenModal" aria-hidden="true">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tokenTitle">
+    <h2 id="tokenTitle">Accès au dépôt privé</h2>
+    <p>Colle ici le même jeton GitHub à portée fine utilisé par les autres applications. Il doit avoir accès à <strong>ikare63/data</strong> avec <strong>Contents: Read and write</strong>.</p>
+    <div class="field">
+      <label for="tokenInput">Jeton GitHub</label>
+      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="clearTokenBtn" type="button">Effacer le jeton</button>
+      <button class="btn" id="closeTokenBtn" type="button">Annuler</button>
+      <button class="btn primary" id="saveTokenBtn" type="button">Enregistrer pour cette session</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(()=>{'use strict';
+const OWNER='ikare63';
+const REPO='data';
+const BRANCH='main';
+const TOKEN_KEYS=['ecosystem-github-token-v1','bureau-genealogique-github-token-v1','scriptoria-github-token-v2'];
+const FILES=[
+  {name:'Arboris',file:'arboris.json',emoji:'🌿'},
+  {name:'Scriptoria',file:'scriptoria.json',emoji:'📜'},
+  {name:'Pistoria',file:'pistoria.json',emoji:'🧭'},
+  {name:'Ariane',file:'ariane.json',emoji:'🧵'},
+  {name:'Scribe',file:'scribe.json',emoji:'✍️'}
+];
+const $=s=>document.querySelector(s);
+const state=new Map();
+let toastTimer=null;
+
+function getToken(){
+  for(const key of TOKEN_KEYS){
+    const value=sessionStorage.getItem(key);
+    if(value)return value;
+  }
+  return '';
+}
+function setToken(value){
+  if(!value)return;
+  TOKEN_KEYS.forEach(key=>sessionStorage.setItem(key,value));
+}
+function clearToken(){TOKEN_KEYS.forEach(key=>sessionStorage.removeItem(key));}
+function toast(message){
+  clearTimeout(toastTimer);const el=$('#toast');el.textContent=message;el.classList.add('show');
+  toastTimer=setTimeout(()=>el.classList.remove('show'),2600);
+}
+function fmtBytes(n){
+  if(!Number.isFinite(n))return'—';
+  if(n<1024)return `${n} o`;
+  if(n<1024*1024)return `${(n/1024).toFixed(1).replace('.',',')} Ko`;
+  return `${(n/1024/1024).toFixed(2).replace('.',',')} Mo`;
+}
+function fmtDate(iso){
+  if(!iso)return'—';
+  const d=new Date(iso);if(Number.isNaN(d.getTime()))return'—';
+  return new Intl.DateTimeFormat('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}).format(d);
+}
+function headers(accept='application/vnd.github+json'){
+  const token=getToken();
+  return {
+    'Accept':accept,
+    'X-GitHub-Api-Version':'2022-11-28',
+    ...(token?{'Authorization':`Bearer ${token}`}:{})
+  };
+}
+async function githubJson(url){
+  const response=await fetch(url,{headers:headers()});
+  if(response.status===401||response.status===403)throw new Error('token');
+  if(!response.ok)throw new Error(`github-${response.status}`);
+  return response.json();
+}
+async function loadFileInfo(item){
+  const path=encodeURIComponent(item.file);
+  const contentUrl=`https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}?ref=${encodeURIComponent(BRANCH)}`;
+  const commitsUrl=`https://api.github.com/repos/${OWNER}/${REPO}/commits?path=${encodeURIComponent(item.file)}&per_page=1`;
+  const [info,commits]=await Promise.all([githubJson(contentUrl),githubJson(commitsUrl)]);
+  return {size:info.size,sha:info.sha,updatedAt:commits?.[0]?.commit?.committer?.date||commits?.[0]?.commit?.author?.date||'',htmlUrl:info.html_url||''};
+}
+function render(){
+  $('#cards').innerHTML=FILES.map(item=>{
+    const s=state.get(item.file)||{};
+    const cls=s.error?'bad':s.loaded?'ok':'';
+    const label=s.error?'Erreur':s.loaded?'Disponible':'Chargement…';
+    return `<article class="card">
+      <div class="card-top">
+        <div class="app-name"><span class="emoji">${item.emoji}</span><div><h3>${item.name}</h3><div class="filename">${item.file}</div></div></div>
+        <span class="file-state ${cls}">${label}</span>
+      </div>
+      <div class="meta">
+        <div class="meta-box"><span>Taille</span><strong>${s.loaded?fmtBytes(s.size):'—'}</strong></div>
+        <div class="meta-box"><span>Dernier commit</span><strong>${s.loaded?fmtDate(s.updatedAt):'—'}</strong></div>
+      </div>
+      <div class="card-actions">
+        <button class="btn primary" type="button" data-download="${item.file}" ${s.loaded?'':'disabled'}>Télécharger</button>
+        <button class="btn" type="button" data-view="${item.file}" ${s.loaded?'':'disabled'}>Voir sur GitHub</button>
+      </div>
+    </article>`;
+  }).join('');
+  document.querySelectorAll('[data-download]').forEach(btn=>btn.addEventListener('click',()=>downloadFile(btn.dataset.download)));
+  document.querySelectorAll('[data-view]').forEach(btn=>btn.addEventListener('click',()=>openFileOnGithub(btn.dataset.view)));
+}
+function setRepoStatus(kind,text){
+  $('#repoStatus').textContent=text;const dot=$('#repoDot');dot.className='dot'+(kind==='ok'?' ok':kind==='bad'?' bad':'');
+}
+async function refresh(){
+  render();
+  if(!getToken()){
+    setRepoStatus('warn','Jeton requis');
+    openTokenModal();
+    return;
+  }
+  setRepoStatus('warn','Connexion…');
+  let ok=0;
+  await Promise.all(FILES.map(async item=>{
+    try{state.set(item.file,{...(await loadFileInfo(item)),loaded:true,error:false});ok++;}
+    catch(error){state.set(item.file,{loaded:false,error:true,message:String(error.message||error)});}
+    render();
+  }));
+  if(ok===FILES.length)setRepoStatus('ok','5 sauvegardes disponibles');
+  else if(ok>0)setRepoStatus('warn',`${ok}/${FILES.length} disponibles`);
+  else{
+    setRepoStatus('bad','Connexion impossible');
+    if([...state.values()].some(v=>v.message==='token'))toast('Jeton refusé ou sans accès au dépôt.');
+  }
+}
+async function fetchRaw(file){
+  const url=`https://api.github.com/repos/${OWNER}/${REPO}/contents/${encodeURIComponent(file)}?ref=${encodeURIComponent(BRANCH)}`;
+  const response=await fetch(url,{headers:headers('application/vnd.github.raw+json')});
+  if(response.status===401||response.status===403)throw new Error('Jeton GitHub refusé.');
+  if(!response.ok)throw new Error(`Téléchargement impossible (${response.status}).`);
+  return response.blob();
+}
+async function downloadFile(file,silent=false){
+  try{
+    const blob=await fetchRaw(file);
+    const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=file;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),3000);
+    if(!silent)toast(`${file} téléchargé.`);
+  }catch(error){toast(error.message||'Téléchargement impossible.');}
+}
+async function downloadAll(){
+  if(!getToken()){openTokenModal();return;}
+  toast('Téléchargement des 5 sauvegardes…');
+  for(const item of FILES){await downloadFile(item.file,true);await new Promise(r=>setTimeout(r,250));}
+  toast('Les 5 téléchargements ont été lancés.');
+}
+function openFileOnGithub(file){window.open(`https://github.com/${OWNER}/${REPO}/blob/${BRANCH}/${encodeURIComponent(file)}`,'_blank','noopener');}
+function openTokenModal(){$('#tokenInput').value='';$('#tokenModal').classList.add('open');$('#tokenModal').setAttribute('aria-hidden','false');setTimeout(()=>$('#tokenInput').focus(),30);}
+function closeTokenModal(){$('#tokenModal').classList.remove('open');$('#tokenModal').setAttribute('aria-hidden','true');}
+function initTheme(){
+  const saved=localStorage.getItem('data-dashboard-theme');
+  const theme=saved||((window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light');
+  document.documentElement.dataset.theme=theme;$('#themeBtn').textContent=theme==='dark'?'☀':'◐';
+}
+function toggleTheme(){const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;localStorage.setItem('data-dashboard-theme',next);$('#themeBtn').textContent=next==='dark'?'☀':'◐';}
+
+$('#refreshBtn').addEventListener('click',refresh);
+$('#downloadAllBtn').addEventListener('click',downloadAll);
+$('#openGithubBtn').addEventListener('click',()=>window.open(`https://github.com/${OWNER}/${REPO}`,'_blank','noopener'));
+$('#tokenBtn').addEventListener('click',openTokenModal);
+$('#closeTokenBtn').addEventListener('click',closeTokenModal);
+$('#saveTokenBtn').addEventListener('click',()=>{const token=$('#tokenInput').value.trim();if(!token){toast('Colle d’abord le jeton GitHub.');return;}setToken(token);closeTokenModal();refresh();});
+$('#clearTokenBtn').addEventListener('click',()=>{clearToken();closeTokenModal();state.clear();render();setRepoStatus('warn','Jeton requis');toast('Jeton retiré de cette session.');});
+$('#tokenModal').addEventListener('click',e=>{if(e.target===$('#tokenModal'))closeTokenModal();});
+$('#themeBtn').addEventListener('click',toggleTheme);
+
+initTheme();render();refresh();
+})();
+</script>
+</body>
+</html>
