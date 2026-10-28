@@ -440,6 +440,7 @@ header.suite-header > .suite-tabs button.active{
 .github-sync-help{font-size:.82rem;color:var(--muted);line-height:1.45;margin:.25rem 0 .8rem}
 .github-sync-help code{font-size:.92em}
 </style>
+<script src="lenaic-sync.js?v=20261028-safe-sync"></script>
 </head>
 <body>
 <div class="toast" id="toast"></div>
@@ -784,6 +785,7 @@ applyTheme(preferredTheme());
 
 async function loadData(){
  await openPistoriaDB();
+ await window.LenaicSync.preserveMigration('pistoria',{legacy:storageGet(STORAGE_KEY),backup:storageGet(BACKUP_KEY),older:['pistoria_data_v2_consolide','pistoria_data_v2','pistoria_data'].map(storageGet),primary:await pistoriaIdbGet(PISTORIA_STATE_STORE,PISTORIA_STATE_ID),previousBackup:await pistoriaIdbGet(PISTORIA_BACKUP_STORE,PISTORIA_IMPORT_BACKUP_ID)});
  let legacy=null,stored=null;
  try{const raw=storageGet(STORAGE_KEY);if(raw)legacy=JSON.parse(raw)}catch(error){console.warn('Ancien localStorage Pistoria illisible',error)}
  stored=await pistoriaReadStored();
@@ -806,7 +808,7 @@ function persistCurrentData(markDirty=true){
   console.error('Sauvegarde IndexedDB Pistoria',error);
   toast('Pistoria n’a pas pu enregistrer dans IndexedDB.',5000);
  });
- if(markDirty)pistoriaMarkGithubDirty();
+ if(markDirty){pistoriaMarkGithubDirty();window.LenaicSync.localChange('pistoria')}
  return{ok:true,persisted:true,bytes:new Blob([payload]).size};
 }
 function saveData(){
@@ -4216,13 +4218,7 @@ function pistoriaGetGithubToken(){return sessionStorage.getItem(BG_GITHUB_TOKEN_
 function pistoriaSetGithubToken(token){if(token){sessionStorage.setItem(BG_GITHUB_TOKEN_SESSION_KEY,token);sessionStorage.setItem(SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY,token)}else sessionStorage.removeItem(BG_GITHUB_TOKEN_SESSION_KEY)}
 function pistoriaGithubConfig(){const saved=pistoriaReadGithubMeta(),m=location.hostname.match(/^([^.]+)\.github\.io$/i);return{owner:saved.owner||m?.[1]||'ikare63',repo:saved.repo||'data',branch:saved.branch||'main',path:saved.path||PISTORIA_GITHUB_FILE}}
 function pistoriaRefreshGithubStatus(){const b=document.querySelector('[data-action="github-sync"]');if(!b)return;const meta=pistoriaReadGithubMeta(),current=meta.lastSyncDate===pistoriaGithubToday()&&!meta.dirty;b.dataset.syncState=!navigator.onLine?'offline':current?'ok':'dirty';b.title=!navigator.onLine?'GitHub — hors connexion':current?`GitHub synchronisé aujourd’hui${meta.lastSyncAt?' · '+new Date(meta.lastSyncAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}`:'GitHub — sauvegarde pistoria.json à effectuer';b.setAttribute('aria-label',b.title)}
-function pistoriaTextToBase64(text){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]||'');r.onerror=()=>reject(r.error);r.readAsDataURL(new Blob([text],{type:'application/json;charset=utf-8'}))})}
-function pistoriaBase64ToText(b64){const bin=atob((b64||'').replace(/\n/g,'')),bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);return new TextDecoder().decode(bytes)}
-async function pistoriaGithubApi(url,options={}){const token=pistoriaGetGithubToken();if(!token)throw new Error('Aucun jeton GitHub fourni.');const headers=new Headers(options.headers||{});headers.set('Accept','application/vnd.github+json');headers.set('Authorization',`Bearer ${token}`);headers.set('X-GitHub-Api-Version','2022-11-28');const res=await fetch(url,{...options,headers});if(res.status===401||res.status===403)throw new Error('Jeton GitHub refusé ou permission Contents insuffisante.');return res}
-async function pistoriaReadGithub(cfg){const api=`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;const metaRes=await pistoriaGithubApi(api);if(metaRes.status===404)return{sha:'',doc:null};if(!metaRes.ok)throw new Error(`Lecture GitHub impossible (${metaRes.status}).`);const info=await metaRes.json();let text='';if(info.content)text=pistoriaBase64ToText(info.content);else{const rawRes=await pistoriaGithubApi(api,{headers:{Accept:'application/vnd.github.raw'}});if(!rawRes.ok)throw new Error(`Lecture de pistoria.json impossible (${rawRes.status}).`);text=await rawRes.text()}let doc=null;try{doc=JSON.parse(text)}catch{throw new Error('Le pistoria.json présent sur GitHub est illisible.')}return{sha:info.sha||'',doc}}
-function pistoriaValidRemote(doc){return !!doc&&Array.isArray(doc.investigations)}
-async function pistoriaLoadGithubState(remote,cfg,sha=''){await pistoriaWriteBackup(PISTORIA_IMPORT_BACKUP_ID,cloneData(data));data=normalizePistoriaData(remote);data=enforceSosaOnlyScope(data);normalizeRepositoryLabelsAndLinks();applyRepositoryEnhancements();normalizeEvidenceWindows();applyEvidenceMemoryToInvestigations();data.githubSyncUpdatedAt=new Date().toISOString();await pistoriaPersistCurrent();pistoriaWriteGithubMeta({owner:cfg.owner,repo:cfg.repo,branch:cfg.branch,path:cfg.path,dirty:false,lastSyncAt:data.githubSyncUpdatedAt,lastSyncDate:pistoriaGithubToday(),lastRemoteSha:sha});render();toast('La version GitHub de Pistoria a été chargée.');return true}
-async function pistoriaGithubSync(config={}){if(!navigator.onLine)throw new Error('Connexion Internet indisponible.');const cfg={...pistoriaGithubConfig(),...config};const b=document.querySelector('[data-action="github-sync"]');if(b)b.dataset.syncState='busy';const remote=await pistoriaReadGithub(cfg),remoteState=pistoriaValidRemote(remote.doc)?remote.doc:null;const meta=pistoriaReadGithubMeta();const localTime=Math.max(pistoriaStateFreshness(data),Date.parse(meta.lastLocalChange||'')||0),remoteTime=pistoriaStateFreshness(remoteState||{});const localHas=(data?.investigations?.length||0)>0,remoteHas=!!remoteState&&(remoteState.investigations?.length||0)>0;if(remoteHas&&(!localHas||remoteTime>localTime)){const msg=!localHas?'Une sauvegarde Pistoria existe déjà dans le dépôt data. La charger sur cet appareil ?':`La version GitHub semble plus récente (${new Date(remoteTime).toLocaleString('fr-FR')}) que la copie locale (${localTime?new Date(localTime).toLocaleString('fr-FR'):'date inconnue'}).\n\nOK : charger GitHub.\nAnnuler : ne rien écraser.`;if(confirm(msg))return pistoriaLoadGithubState(remoteState,cfg,remote.sha);pistoriaRefreshGithubStatus();toast('Aucune version n’a été écrasée.');return false}const syncAt=new Date().toISOString(),payload=cloneData(data);payload.githubSyncUpdatedAt=syncAt;const content=await pistoriaTextToBase64(JSON.stringify(payload,null,2));const api=`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}`;const body={message:`Pistoria — sauvegarde ${pistoriaGithubToday()}`,content,branch:cfg.branch};if(remote.sha)body.sha=remote.sha;const res=await pistoriaGithubApi(api,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(!res.ok){let detail='';try{detail=(await res.json())?.message||''}catch{}throw new Error(detail||`Écriture GitHub impossible (${res.status}).`)}const result=await res.json();data.githubSyncUpdatedAt=syncAt;pistoriaWriteGithubMeta({owner:cfg.owner,repo:cfg.repo,branch:cfg.branch,path:cfg.path,dirty:false,lastSyncAt:syncAt,lastSyncDate:pistoriaGithubToday(),lastCommitSha:result.commit?.sha||''});await pistoriaPersistCurrent();toast('Pistoria sauvegardé dans data/pistoria.json.');return true}
+async function pistoriaGithubSync(config={}){return window.LenaicSync.run(pistoriaSafeAdapter,'sync',config)}
 function openPistoriaGithubModal(){const cfg=pistoriaGithubConfig(),hasToken=!!pistoriaGetGithubToken();openModal('Synchroniser avec GitHub',`<form id="pistoriaGithubSyncForm"><p class="github-sync-help">Pistoria travaille dans IndexedDB et synchronise son état complet dans <code>ikare63/data/${esc(cfg.path)}</code>. Le dépôt <code>data</code> doit rester privé. Le jeton GitHub n’est conservé que pendant cette session.</p><div class="form-grid"><div class="field"><label>Propriétaire</label><input name="owner" value="${esc(cfg.owner)}" required></div><div class="field"><label>Dépôt</label><input name="repo" value="${esc(cfg.repo)}" required></div><div class="field"><label>Branche</label><input name="branch" value="${esc(cfg.branch)}" required></div><div class="field"><label>Chemin du JSON</label><input name="path" value="${esc(cfg.path)}" required></div><div class="field" style="grid-column:1/-1"><label>Jeton GitHub à portée fine</label><input type="password" name="token" ${hasToken?'placeholder="Jeton déjà chargé pour cette session"':'required placeholder="github_pat_…"'} autocomplete="off"><small>Permission minimale : Contents — Read and write sur le dépôt privé data.</small></div></div><div class="button-row"><button class="btn primary" type="submit">Synchroniser maintenant</button><button class="btn" type="button" data-close-modal>Annuler</button></div></form>`);const form=document.getElementById('pistoriaGithubSyncForm');if(form)form.onsubmit=async event=>{event.preventDefault();const fd=new FormData(form),token=String(fd.get('token')||'').trim();if(token)pistoriaSetGithubToken(token);const config={owner:String(fd.get('owner')||'').trim(),repo:String(fd.get('repo')||'').trim(),branch:String(fd.get('branch')||'main').trim(),path:String(fd.get('path')||PISTORIA_GITHUB_FILE).trim()};pistoriaWriteGithubMeta(config);const submit=form.querySelector('[type="submit"]');if(submit)submit.disabled=true;try{await pistoriaGithubSync(config);closeModal()}catch(error){console.error('Synchronisation GitHub Pistoria',error);if(submit)submit.disabled=false;const b=document.querySelector('[data-action="github-sync"]');if(b)b.dataset.syncState='error';alert('Synchronisation impossible : '+(error?.message||'erreur inconnue'))}}}
 /* Gestionnaires permanents de l’en-tête. */
 document.querySelectorAll('[data-action="export"]').forEach(button=>{
@@ -4254,6 +4250,10 @@ document.addEventListener('keydown',e=>{
   le premier appel à normalizePistoriaData(). Cela évite le crash silencieux
   qui laissait uniquement l’en-tête visible.
 */
+const pistoriaSafeAdapter={id:'pistoria',key:STORAGE_KEY,get:()=>data,
+ valid:v=>!!v&&Array.isArray(v.investigations),has:v=>!!(v.investigations?.length||v.genealogy?.people?.length),flush:()=>pistoriaPersistCurrent(),
+ apply:async v=>{const next=normalizePistoriaData(v);await pistoriaPersistSerialized(JSON.stringify(next));data=next;render()},
+ success:(at,sha)=>pistoriaWriteGithubMeta({dirty:false,lastSyncAt:at,lastSyncDate:pistoriaGithubToday(),lastRemoteSha:sha})};
 async function initPistoria(){
  try{
   data=normalizePistoriaData(await loadData());
@@ -4265,14 +4265,14 @@ async function initPistoria(){
   await pistoriaPersistCurrent();
   render();
   if(!storageGet(PISTORIA_RESOLVED_SNAPSHOT_KEY))storageSet(PISTORIA_RESOLVED_SNAPSHOT_KEY,JSON.stringify(pistoriaResolvedIds()));
-  pistoriaRefreshGithubStatus();
+  pistoriaRefreshGithubStatus();window.LenaicSync.register(pistoriaSafeAdapter);
   window.addEventListener('online',pistoriaRefreshGithubStatus);
   window.addEventListener('offline',pistoriaRefreshGithubStatus);
   setTimeout(updatePistoriaExportAlert,0);
  }catch(error){
   console.error('Initialisation Pistoria',error);
-  data=normalizePistoriaData(cloneData(defaultData));render();
-  toast('Erreur d’initialisation du stockage Pistoria',5000);
+  document.querySelectorAll('button,input,select,textarea').forEach(el=>el.disabled=true);
+  toast('Stockage inaccessible : édition suspendue pour protéger les données. '+error.message,10000);
  }
 }
 initPistoria();

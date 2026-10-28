@@ -6,7 +6,7 @@ const APP=LenaicEcosystem.source();
 const CONTEXT_APPS=new Set(['arboris','pistoria','ariane']);
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
-const read=(key,fallback=null)=>{try{const v=JSON.parse(localStorage.getItem(key)||'null');return v??fallback}catch{return fallback}};
+const read=(key,fallback=null)=>{try{const v=window.LenaicSync?.view(key)??JSON.parse(localStorage.getItem(key)||'null');return v??fallback}catch{return fallback}};
 const val=(o,path)=>String(path).split('.').reduce((a,k)=>a?.[k],o);
 const norm=s=>String(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
 
@@ -41,8 +41,8 @@ function buildSearchIndex(){
   if(items.length||['arboris','scriptoria','pistoria','ariane','scribe'].includes(APP))LenaicSearch.publish(APP,items);
  }catch(e){console.warn('Index écosystème',APP,e)}
 }
-let lastSearchRaw='';function maybeIndex(){const key={arboris:'memoire-famille-data',scriptoria:'scriptoria-data',pistoria:'pistoria_private_v3',ariane:'ariane-local-v2',scribe:'scribe-local-v3'}[APP];if(!key)return;const raw=localStorage.getItem(key)||'';if(raw===lastSearchRaw)return;lastSearchRaw=raw;buildSearchIndex()}
-maybeIndex();setInterval(maybeIndex,5000);
+let lastSearchRaw='';function maybeIndex(){const key={arboris:'memoire-famille-data',scriptoria:'scriptoria-data',pistoria:'pistoria_private_v3',ariane:'ariane-local-v2',scribe:'scribe-local-v3'}[APP];if(!key)return;const raw=JSON.stringify(window.LenaicSync?.view(key))||localStorage.getItem(key)||'';if(raw===lastSearchRaw)return;lastSearchRaw=raw;buildSearchIndex()}
+maybeIndex();setInterval(maybeIndex,5000);window.addEventListener('lenaicsyncchange',maybeIndex);
 
 function contextBar(){
  if(!CONTEXT_APPS.has(APP))return null;injectStyle();let bar=$('#ecoContextBar');if(!bar){bar=document.createElement('div');bar.id='ecoContextBar';bar.className='eco-context-bar';const anchor=$('header')||$('.app header')||document.body.firstElementChild;anchor?.insertAdjacentElement('afterend',bar)}

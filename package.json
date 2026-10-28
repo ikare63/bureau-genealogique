@@ -1,0 +1,6 @@
+{
+  "name": "lenaic-private-sync-checks",
+  "private": true,
+  "scripts": {"test": "node --test sync.test.cjs"},
+  "devDependencies": {"fake-indexeddb": "6.2.6"}
+}

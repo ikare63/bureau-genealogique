@@ -1576,6 +1576,7 @@ header.suite-header > .sister-nav{
 .github-sync-help{font-size:.82rem;color:var(--muted);line-height:1.45;margin:.25rem 0 .8rem}
 .github-sync-help code{font-size:.92em}
 </style>
+<script src="lenaic-sync.js?v=20261028-safe-sync"></script>
 </head>
 <body>
 <div class="app">
@@ -1805,35 +1806,6 @@ function refreshGithubSyncStatus(){
  const title=!navigator.onLine?'GitHub — hors connexion':current?`GitHub synchronisé aujourd’hui${meta.lastSyncAt?' · '+new Date(meta.lastSyncAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}`:'GitHub — sauvegarde scriptoria.json à effectuer';
  b.title=title;b.setAttribute('aria-label',title);
 }
-async function textToBase64(text){
- return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]||'');r.onerror=()=>reject(r.error);r.readAsDataURL(new Blob([text],{type:'application/json;charset=utf-8'}))});
-}
-function base64ToText(b64){
- const bin=atob((b64||'').replace(/\n/g,'')),bytes=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);return new TextDecoder().decode(bytes);
-}
-async function githubApi(url,options={}){
- const token=getGithubToken();if(!token)throw new Error('Aucun jeton GitHub fourni.');
- const headers=new Headers(options.headers||{});headers.set('Accept','application/vnd.github+json');headers.set('Authorization',`Bearer ${token}`);headers.set('X-GitHub-Api-Version','2022-11-28');
- const res=await fetch(url,{...options,headers});
- if(res.status===401||res.status===403)throw new Error('Jeton GitHub refusé ou permission Contents insuffisante.');
- return res;
-}
-async function readGithubRepoDocument(cfg){
- const api=`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}`;
- const metaRes=await githubApi(api);
- if(metaRes.status===404)return{sha:'',doc:null};
- if(!metaRes.ok)throw new Error(`Lecture GitHub impossible (${metaRes.status}).`);
- const info=await metaRes.json();
- let text='';
- if(info.content)text=base64ToText(info.content);
- else{
-  const rawRes=await githubApi(api,{headers:{Accept:'application/vnd.github.raw'}});
-  if(!rawRes.ok)throw new Error(`Lecture de scriptoria.json impossible (${rawRes.status}).`);
-  text=await rawRes.text();
- }
- let doc={};try{doc=JSON.parse(text)}catch{throw new Error('Le scriptoria.json présent sur GitHub est illisible.');}
- return{sha:info.sha||'',doc};
-}
 function extractScriptoriaStateFromRepo(doc){
  // Format courant : scriptoria.json contient directement l'état Scriptoria.
  if(doc&&Array.isArray(doc.records)&&Array.isArray(doc.people))return doc;
@@ -1842,38 +1814,7 @@ function extractScriptoriaStateFromRepo(doc){
  if(doc?.data&&Array.isArray(doc.data.records))return doc.data;
  return null;
 }
-async function loadGithubState(remoteState,cfg,remoteSha=''){
- backupText();state=migrate(remoteState);const serialized=JSON.stringify(compactValueForStorage(state));await persistStateToIndexedDB(serialized);
- state.metadata=state.metadata||{};state.metadata.lastGithubSyncAt=now();
- writeGithubMeta({owner:cfg.owner,repo:cfg.repo,branch:cfg.branch,path:cfg.path,dirty:false,lastSyncAt:state.metadata.lastGithubSyncAt,lastSyncDate:todayISO(),lastRemoteSha:remoteSha});
- renderNav();renderMain();indicator('Restauré depuis GitHub');toast('La version GitHub de Scriptoria a été chargée.');refreshStorageInfo();return true;
-}
-async function githubSyncCurrentState(options={}){
- if(!navigator.onLine)throw new Error('Connexion Internet indisponible.');
- const cfg={...detectGithubContext(),...(options.config||{})};
- if(!cfg.owner||!cfg.repo)throw new Error('Dépôt GitHub non renseigné.');
- const b=document.querySelector('.github-sync-btn');if(b)b.dataset.syncState='busy';
- const remote=await readGithubRepoDocument(cfg),remoteState=extractScriptoriaStateFromRepo(remote.doc);
- const localTime=stateFreshness(state),remoteTime=stateFreshness(remoteState||{});
- const localHasData=(state.records?.length||0)+(state.people?.length||0)+(state.families?.length||0)>0;
- const remoteHasData=!!remoteState&&((remoteState.records?.length||0)+(remoteState.people?.length||0)+(remoteState.families?.length||0)>0);
- if(remoteHasData&&(!localHasData||remoteTime>localTime)){
-  const msg=!localHasData?'Une sauvegarde Scriptoria existe déjà dans ce dépôt GitHub. La charger sur cet appareil ?':`La version GitHub semble plus récente (${new Date(remoteTime).toLocaleString('fr-FR')}) que la copie locale (${new Date(localTime).toLocaleString('fr-FR')}).\n\nOK : charger GitHub.\nAnnuler : ne rien écraser.`;
-  if(confirm(msg))return loadGithubState(remoteState,cfg,remote.sha);
-  refreshGithubSyncStatus();toast('Aucune version n’a été écrasée.');return false;
- }
- const syncAt=now(),payload=clone(state);payload.metadata=payload.metadata||{};payload.metadata.lastGithubSyncAt=syncAt;
- // Un dépôt "data", un fichier par application : Scriptoria écrit directement son état complet.
- const json=JSON.stringify(payload,null,2),content=await textToBase64(json);
- const api=`https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}`;
- const body={message:`Scriptoria — sauvegarde ${todayISO()}`,content,branch:cfg.branch};if(remote.sha)body.sha=remote.sha;
- const res=await githubApi(api,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
- if(!res.ok){let detail='';try{detail=(await res.json())?.message||''}catch{}throw new Error(detail||`Écriture GitHub impossible (${res.status}).`)}
- const result=await res.json();state.metadata.lastGithubSyncAt=syncAt;
- writeGithubMeta({owner:cfg.owner,repo:cfg.repo,branch:cfg.branch,path:cfg.path,dirty:false,lastSyncAt:syncAt,lastSyncDate:todayISO(),lastCommitSha:result.commit?.sha||''});
- localStorage.setItem(SCRIPTORIA_EXPORT_COUNT_KEY,'0');updateScriptoriaExportAlert();await persistStateToIndexedDB(JSON.stringify(compactValueForStorage(state)));
- indicator(`Enregistré · GitHub ${new Date(syncAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}`);if(!options.silent)toast('Scriptoria sauvegardé dans data/scriptoria.json.');refreshStorageInfo();return true;
-}
+async function githubSyncCurrentState(options={}){return window.LenaicSync.run(scriptoriaSafeAdapter,'sync',options.config||{})}
 function openGithubSyncModal(){
  const cfg=detectGithubContext(),hasToken=!!getGithubToken();
  openModal('Synchroniser avec GitHub',`<form id="githubSyncForm"><div class="github-sync-help">Scriptoria travaille dans IndexedDB et synchronise son état complet dans <code>ikare63/data/${esc(cfg.path)}</code>. Le dépôt <code>data</code> doit rester privé. Le jeton GitHub n’est conservé que pendant cette session du navigateur.</div><div class="form-grid"><div class="field"><label>Propriétaire</label><input name="owner" value="${esc(cfg.owner)}" required></div><div class="field"><label>Dépôt</label><input name="repo" value="${esc(cfg.repo)}" required></div><div class="field"><label>Branche</label><input name="branch" value="${esc(cfg.branch)}" required></div><div class="field"><label>Chemin du JSON</label><input name="path" value="${esc(cfg.path)}" required></div><div class="field wide"><label>Jeton GitHub à portée fine</label><input type="password" name="token" value="" ${hasToken?'placeholder="Jeton déjà chargé pour cette session"':'required placeholder="github_pat_…"'} autocomplete="off"><span class="help">Permission minimale : Contents — Read and write, uniquement pour ce dépôt.</span></div></div><div class="toolbar"><button class="primary" type="submit">Synchroniser maintenant</button><button type="button" data-close-modal>Annuler</button></div></form>`);
@@ -1887,7 +1828,7 @@ function saveState(immediate=false,dataChanged=true){
    await persistStateToIndexedDB(serialized);
    const size=(storageSizeBytes(serialized)/1024/1024).toFixed(2);
    indicator(`Enregistré localement · ${size} Mo`);
-   if(dataChanged){markGithubDirty();reminderSnoozedUntil=0;updateSaveReminder()}
+   if(dataChanged){markGithubDirty();window.LenaicSync.localChange('scriptoria');reminderSnoozedUntil=0;updateSaveReminder()}
   }catch(error){console.error('Sauvegarde IndexedDB',error);indicator('Erreur de sauvegarde',true);toast(`Sauvegarde impossible : ${error?.message||'cause inconnue'}`)}
  };
  immediate?run():saveTimer=setTimeout(run,180);
@@ -6641,6 +6582,8 @@ async function fetchRepoDataJson(){
  return null;
 }
 async function bootstrapStateSources(){
+ await window.LenaicSync.preserveMigration('scriptoria',{legacy:localStorage.getItem(LS_KEY),backup:localStorage.getItem(BACKUP_KEY),primary:await idbBackupGet(PRIMARY_STATE_ID),previousBackup:await idbBackupGet(LATEST_BACKUP_ID)});
+ await migrateLegacyLocalBackup();
  const legacyRaw=localStorage.getItem(LS_KEY);
  let legacy=null;if(legacyRaw){try{legacy=migrate(JSON.parse(legacyRaw))}catch(e){console.warn('Ancien scriptoria-data illisible',e)}}
  const saved=await idbBackupGet(PRIMARY_STATE_ID).catch(()=>null);let idbState=null;if(saved?.payload){try{idbState=migrate(JSON.parse(saved.payload))}catch(e){console.warn('État IndexedDB illisible',e)}}
@@ -7843,6 +7786,8 @@ async function refreshStorageInfo(){
  const backup=document.getElementById('backupInfo');if(backup){const images=files.filter(f=>safe(f.mimeType).startsWith('image/')).length,pdfs=files.filter(f=>f.mimeType==='application/pdf').length,showDate=v=>v?new Date(v).toLocaleString('fr-FR'):'Jamais';backup.innerHTML=[['Dernière modification',showDate(state.metadata.updatedAt)],['Dernier export textuel',showDate(state.metadata.lastJsonExportAt)],['Images dans IndexedDB',images],['PDF dans IndexedDB',pdfs],['Taille des fichiers locaux',humanBytes(fileSize)],['État de la sauvegarde',externalBackupCurrent()?'À jour':'Recommandée']].map(x=>`<div class="card stat"><span>${esc(x[0])}</span><strong>${esc(x[1])}</strong></div>`).join('')}
 }
 function datedName(prefix,ext='json'){const d=new Date().toISOString().slice(0,10);return `${prefix}-${d}.${ext}`}
+function hideSaveReminder(){for(const id of ['saveReminder','saveReminderCollapsed'])document.getElementById(id)?.classList.remove('show')}
+function updateSaveReminder(){hideSaveReminder();updateScriptoriaExportAlert()}
 function exportText(options={}){if(exportInProgress)return Promise.resolve(false);try{const exportedAt=now(),payload=clone(state);payload.metadata.lastJsonExportAt=exportedAt;payload.export={appVersion:APP_VERSION,exportedAt,containsFiles:false};downloadBlob(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}),exportFileName('scriptoria-donnees'));state.metadata.lastJsonExportAt=exportedAt;localStorage.setItem(SCRIPTORIA_EXPORT_COUNT_KEY,'0');updateScriptoriaExportAlert();saveState(true,false);hideSaveReminder();refreshStorageInfo();toast('La sauvegarde JSON des données textuelles a été téléchargée.');if(!options.silentNotice)setTimeout(()=>toast('Cette sauvegarde contient les données et les références des pages, mais pas nécessairement les images et PDF enregistrés dans ce navigateur.'),2800);return Promise.resolve(true)}catch(e){console.error(e);toast(`Échec de l’export JSON : ${e.message}`);return Promise.resolve(false)}}
 async function exportFull(){if(exportInProgress){toast('Un export est déjà en cours.');return false}let files=[];try{files=await idbAll()}catch(e){toast(`Lecture des fichiers impossible : ${e.message}`);return false}const total=files.reduce((sum,f)=>sum+(f.blob?.size||0)+(f.thumbnail?.size||0),0),pdfs=files.filter(f=>f.mimeType==='application/pdf').length;const summary=`Actes : ${state.records.length}
 Individus : ${state.people.length}
@@ -9140,21 +9085,42 @@ function rebuildEntitiesFromExistingRecords(){
  const removed=cleanupExactTechnicalClones();
  if(removed||technicalDuplicatesRemoved)saveState(true);
 }
+async function captureScriptoriaDocument(current){
+ const files=[];
+ for(const f of (await idbAll()).sort((a,b)=>String(a.id).localeCompare(String(b.id)))){
+  files.push({id:f.id,blob:await blobToDataURL(f.blob),thumbnail:f.thumbnail?await blobToDataURL(f.thumbnail):null,fileName:f.fileName||'',mimeType:f.mimeType||''});
+ }
+ const payload={data:clone(current),files};
+ if(new Blob([JSON.stringify(payload)]).size>90*1024*1024)throw Error('Sauvegarde complète supérieure à 90 Mo : exporte le secours JSON et utilise un stockage adapté aux fichiers volumineux. Aucun JSON principal remplacé.');
+ return payload;
+}
+async function applyScriptoriaDocument(doc){
+ const next=migrate(extractScriptoriaStateFromRepo(doc));
+ const files=(doc.files||[]).map(f=>({id:f.id,blob:dataURLToBlob(f.blob),thumbnail:f.thumbnail?dataURLToBlob(f.thumbnail):null,fileName:f.fileName,mimeType:f.mimeType}));
+ clearTimeout(saveTimer);if(!db)await initDB();
+ await new Promise((resolve,reject)=>{const tx=db.transaction([FILE_STORE,BACKUP_STORE],'readwrite');for(const f of files)tx.objectStore(FILE_STORE).put(f);tx.objectStore(BACKUP_STORE).put({id:PRIMARY_STATE_ID,updatedAt:next.metadata?.updatedAt||now(),payload:JSON.stringify(compactValueForStorage(next))});tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||Error('Import complet annulé'))});
+ state=next;renderNav();renderMain();refreshStorageInfo();
+}
+const scriptoriaSafeAdapter={id:'scriptoria',key:LS_KEY,get:()=>state,extract:extractScriptoriaStateFromRepo,capture:captureScriptoriaDocument,comparable:doc=>({data:extractScriptoriaStateFromRepo(doc),files:doc.files||[]}),applyDocument:applyScriptoriaDocument,
+ valid:v=>!!v&&Array.isArray(v.records)&&Array.isArray(v.people),has:v=>['records','people','families','registers','pages','places','research','sources'].some(k=>v[k]?.length),
+ flush:async()=>{clearTimeout(saveTimer);await persistStateToIndexedDB(JSON.stringify(compactValueForStorage(state)))},
+ apply:async v=>{const next=migrate(v);clearTimeout(saveTimer);await persistStateToIndexedDB(JSON.stringify(compactValueForStorage(next)));state=next;renderNav();renderMain();refreshStorageInfo()},
+ success:(at,sha)=>writeGithubMeta({dirty:false,lastSyncAt:at,lastSyncDate:todayISO(),lastRemoteSha:sha})};
 async function init(){
  try{
   await initDB();
-  await migrateLegacyLocalBackup();
+
   const source=await bootstrapStateSources();
   if(source==='ancien localStorage')toast('Migration réussie : Scriptoria travaille maintenant dans IndexedDB.');
   else if(source==='scriptoria.json')toast('Scriptoria initialisé depuis scriptoria.json.');
- }catch(e){console.error(e);toast(`Initialisation du stockage impossible : ${e.message}`)}
+ }catch(e){console.error(e);toast(`Stockage inaccessible : édition suspendue. ${e.message}`);document.querySelectorAll('button,input,select,textarea').forEach(el=>el.disabled=true);return}
  applyTheme(state.settings?.theme||'light');
  rebuildEntitiesFromExistingRecords();
  currentTab=state.settings.lastTab==='pages'?'registers':(state.settings.lastTab||'dashboard');
  renderNav();renderMain();
  // IndexedDB est désormais la copie de travail ; localStorage ne contient plus la base Scriptoria.
  saveState(true,false);
- refreshGithubSyncStatus();
+ refreshGithubSyncStatus();window.LenaicSync.register(scriptoriaSafeAdapter);
  if(currentTab==='registers'&&currentSectionView('registers')==='pages')loadThumbs();
  if(navigator.storage?.estimate){const est=await navigator.storage.estimate();if(est.quota&&est.usage/est.quota>.85)toast('Attention : le stockage du navigateur est presque plein')}
  updateSaveReminder();
@@ -9168,7 +9134,6 @@ async function init(){
 const observer=new MutationObserver(()=>{if(currentTab==='registers'&&currentSectionView('registers')==='pages')loadThumbs()});
 observer.observe(document.getElementById('main'),{childList:true});
 init();
-})();
 
 let networkResizeTimer=null;
 window.addEventListener('resize',()=>{
@@ -9182,6 +9147,7 @@ homonymObserver.observe(document.body,{childList:true,subtree:true});
 
 
 setTimeout(updateScriptoriaExportAlert,0);
+})();
 </script>
 <script src="lenaic-bus.js?v=2"></script>
 <script src="lenaic-integration.js?v=2"></script>
