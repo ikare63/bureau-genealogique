@@ -1,6 +1,12 @@
 {
   "name": "lenaic-private-sync-checks",
   "private": true,
-  "scripts": {"test": "node --test sync.test.cjs"},
-  "devDependencies": {"fake-indexeddb": "6.2.6"}
+  "scripts": {
+    "test": "node --test sync.test.cjs backup-verifier.test.cjs",
+    "test:integration": "node integration.test.cjs"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "6.2.6",
+    "jsdom": "30.1.3"
+  }
 }

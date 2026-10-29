@@ -705,7 +705,7 @@ html[data-theme="dark"] .compact-logo{
 </div>
 <div class="toast" id="toast"></div>
 <script>
-(()=>{'use strict';
+(()=>{'use strict';window.LenaicSync.assertStorageReady();
 const KEY='memoire-famille-data',BACKUP='memoire-famille-backup',APP_VERSION='1.2.0';
 const ARBORIS_DB_NAME='arboris-state-v1',ARBORIS_DB_VERSION=1,ARBORIS_STATE_STORE='state',ARBORIS_BACKUP_STORE='backups';
 const ARBORIS_STATE_ID='current',ARBORIS_BACKUP_ID='latest';
@@ -779,17 +779,7 @@ function purgeLegacyDemoData(s){
  return true
 }
 function openArborisDB(){
- if(arborisDb)return Promise.resolve(arborisDb);
- return new Promise((resolve,reject)=>{
-  const req=indexedDB.open(ARBORIS_DB_NAME,ARBORIS_DB_VERSION);
-  req.onupgradeneeded=()=>{
-   const d=req.result;
-   if(!d.objectStoreNames.contains(ARBORIS_STATE_STORE))d.createObjectStore(ARBORIS_STATE_STORE,{keyPath:'id'});
-   if(!d.objectStoreNames.contains(ARBORIS_BACKUP_STORE))d.createObjectStore(ARBORIS_BACKUP_STORE,{keyPath:'id'});
-  };
-  req.onsuccess=()=>{arborisDb=req.result;resolve(arborisDb)};
-  req.onerror=()=>reject(req.error||new Error('IndexedDB indisponible'));
- });
+ return window.LenaicSync.openApplicationDB(ARBORIS_DB_NAME,ARBORIS_DB_VERSION,[ARBORIS_STATE_STORE,ARBORIS_BACKUP_STORE]).then(value=>{arborisDb=value;value.onversionchange=()=>{arborisDb=null};return value});
 }
 async function arborisIdbGet(store,id){
  const d=await openArborisDB();
@@ -805,9 +795,13 @@ async function arborisIdbPut(store,row){
   tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error);tx.onabort=()=>reject(tx.error||new Error('Transaction IndexedDB annulée'));
  });
 }
-async function arborisPersistSerialized(serialized){
- await arborisIdbPut(ARBORIS_STATE_STORE,{id:ARBORIS_STATE_ID,savedAt:now(),payload:serialized});
- return true;
+let arborisKnownPrimary, arborisWriteQueue=Promise.resolve();
+function arborisPersistSerialized(serialized){
+ const row={id:ARBORIS_STATE_ID,savedAt:new Date().toISOString(),payload:serialized};
+ const task=arborisWriteQueue.catch(()=>{}).then(async()=>{
+  if(arborisKnownPrimary===undefined)arborisKnownPrimary=await arborisIdbGet(ARBORIS_STATE_STORE,ARBORIS_STATE_ID);
+  await window.LenaicSync.replaceRecord(ARBORIS_DB_NAME,ARBORIS_STATE_STORE,ARBORIS_STATE_ID,arborisKnownPrimary,row);arborisKnownPrimary=row;return true;
+ });arborisWriteQueue=task;return task;
 }
 async function arborisPersistCurrent(){
  const serialized=JSON.stringify(state);
@@ -816,8 +810,9 @@ async function arborisPersistCurrent(){
 }
 async function arborisReadStored(){
  const row=await arborisIdbGet(ARBORIS_STATE_STORE,ARBORIS_STATE_ID);
- if(!row?.payload)return null;
- try{return normalize(JSON.parse(row.payload))}catch(error){console.error('Copie IndexedDB Arboris illisible',error);return null}
+ if(arborisKnownPrimary===undefined)arborisKnownPrimary=row;
+ if(!row)return null;if(typeof row.payload!=='string'||!row.payload)throw Error('Base Arboris illisible : édition suspendue.');
+ try{const doc=JSON.parse(row.payload);if(!doc||!Array.isArray(doc.people)||!Array.isArray(doc.families))throw Error('Structure Arboris invalide');return normalize(doc)}catch(error){throw Error('Copie IndexedDB Arboris illisible : '+error.message)}
 }
 async function arborisBackupCurrent(){
  try{await arborisIdbPut(ARBORIS_BACKUP_STORE,{id:ARBORIS_BACKUP_ID,savedAt:now(),payload:JSON.stringify(state)});return true}
@@ -838,22 +833,18 @@ async function load(){
  await openArborisDB();
  await window.LenaicSync.preserveMigration('arboris',{legacy:localStorage.getItem(KEY),backup:localStorage.getItem(BACKUP),primary:await arborisIdbGet(ARBORIS_STATE_STORE,ARBORIS_STATE_ID),previousBackup:await arborisIdbGet(ARBORIS_BACKUP_STORE,ARBORIS_BACKUP_ID)});
  let legacy=null,stored=null;
- try{const raw=localStorage.getItem(KEY);if(raw)legacy=normalize(JSON.parse(raw))}catch(error){console.warn('Ancien localStorage Arboris illisible',error)}
+ try{const raw=localStorage.getItem(KEY);if(raw)legacy=normalize(JSON.parse(raw))}catch(error){throw Error('Ancien localStorage Arboris illisible : '+error.message)}
  stored=await arborisReadStored();
- if(legacy&&stored)state=arborisStateFreshness(legacy)>=arborisStateFreshness(stored)?legacy:stored;
+ if(legacy&&stored){if(window.LenaicSync.canonical(legacy)!==window.LenaicSync.canonical(stored))throw Error('Copies Arboris divergentes : export et comparaison manuelle requis. Aucune copie remplacée.');state=stored;}
  else state=legacy||stored||defaultState();
  state=normalize(state);
- purgeLegacyDemoData(state);
+ // Preserve every saved record; no automatic demo-data purge.
  const serialized=JSON.stringify(state);
  await arborisPersistSerialized(serialized);
  const check=await arborisIdbGet(ARBORIS_STATE_STORE,ARBORIS_STATE_ID);
  if(!check?.payload||check.payload!==serialized)throw new Error('Vérification de la migration IndexedDB Arboris impossible.');
- if(legacy){
-  localStorage.removeItem(KEY);
-  localStorage.removeItem(BACKUP);
-  localStorage.removeItem('bg-drive-sync-meta:arboris');
-  toast('Arboris a été déplacé vers IndexedDB : le gros localStorage a été libéré.',4200);
- }
+ // Historical localStorage and backups deliberately retained.
+
  applyTheme();
 }
 function save(mark=true){
@@ -2775,8 +2766,8 @@ function arborisReadGithubMeta(){try{return JSON.parse(localStorage.getItem(ARBO
 function arborisWriteGithubMeta(patch){const next={...arborisReadGithubMeta(),...patch};localStorage.setItem(ARBORIS_GITHUB_META_KEY,JSON.stringify(next));arborisRefreshGithubStatus();return next}
 function arborisGithubToday(){return new Date().toISOString().slice(0,10)}
 function arborisMarkGithubDirty(){const meta=arborisReadGithubMeta();arborisWriteGithubMeta({dirty:true,lastLocalChange:state?.metadata?.updatedAt||now(),lastSyncDate:meta.lastSyncDate||''})}
-function arborisGetGithubToken(){return sessionStorage.getItem(BG_GITHUB_TOKEN_SESSION_KEY)||sessionStorage.getItem(SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY)||''}
-function arborisSetGithubToken(token){if(token){sessionStorage.setItem(BG_GITHUB_TOKEN_SESSION_KEY,token);sessionStorage.setItem(SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY,token)}else sessionStorage.removeItem(BG_GITHUB_TOKEN_SESSION_KEY)}
+function arborisGetGithubToken(){return window.LenaicSync.hasToken()}
+function arborisSetGithubToken(token){window.LenaicSync.setToken(token)}
 function arborisGithubConfig(){const saved=arborisReadGithubMeta(),m=location.hostname.match(/^([^.]+)\.github\.io$/i);return{owner:saved.owner||m?.[1]||'ikare63',repo:saved.repo||'data',branch:saved.branch||'main',path:saved.path||ARBORIS_GITHUB_FILE}}
 function arborisRefreshGithubStatus(){const b=document.querySelector('[data-github-sync]');if(!b)return;const meta=arborisReadGithubMeta(),current=meta.lastSyncDate===arborisGithubToday()&&!meta.dirty;b.dataset.syncState=!navigator.onLine?'offline':current?'ok':'dirty';b.title=!navigator.onLine?'GitHub — hors connexion':current?`GitHub synchronisé aujourd’hui${meta.lastSyncAt?' · '+new Date(meta.lastSyncAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}`:'GitHub — sauvegarde arboris.json à effectuer';b.setAttribute('aria-label',b.title)}
 async function arborisGithubSync(config={}){return window.LenaicSync.run(arborisSafeAdapter,'sync',config)}
@@ -2796,10 +2787,9 @@ window.addEventListener('beforeunload',e=>{
  e.preventDefault();
  e.returnValue='';
 });
-const arborisSafeAdapter={id:'arboris',key:KEY,get:()=>state,
- valid:v=>!!v&&Array.isArray(v.people)&&Array.isArray(v.families),has:v=>['people','families','sources','places','research','media','relations'].some(k=>v[k]?.length),
- flush:()=>arborisPersistCurrent(),
- apply:async v=>{const next=normalize(v);await arborisPersistSerialized(JSON.stringify(next));state=next;render();updateBackupBar()},
+const arborisSafeAdapter={id:'arboris',key:KEY,get:()=>state,valid:v=>!!v&&Array.isArray(v.people)&&Array.isArray(v.families),has:v=>true,
+ revision:()=>window.LenaicSync.record(ARBORIS_DB_NAME,ARBORIS_STATE_STORE,ARBORIS_STATE_ID),consistent:(v,row)=>window.LenaicSync.canonical(row)===window.LenaicSync.canonical(arborisKnownPrimary),
+ apply:async(v,expected)=>{const next=normalize(v),row={id:ARBORIS_STATE_ID,savedAt:new Date().toISOString(),payload:JSON.stringify(next)};await window.LenaicSync.replaceRecord(ARBORIS_DB_NAME,ARBORIS_STATE_STORE,ARBORIS_STATE_ID,expected,row);arborisKnownPrimary=row;state=next;render();return next},
  success:(at,sha)=>arborisWriteGithubMeta({dirty:false,lastSyncAt:at,lastSyncDate:arborisGithubToday(),lastRemoteSha:sha})};
 async function initArboris(){
  try{

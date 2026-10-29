@@ -473,6 +473,7 @@ header.suite-header > .suite-tabs button.active{
 
 <script src="lenaic-bus.js?v=2"></script>
 <script>
+window.LenaicSync.assertStorageReady();
 const STORAGE_KEY='pistoria_private_v3';
 const BACKUP_KEY='pistoria_private_v3_backup';
 const PISTORIA_DB_NAME='pistoria-state-v1',PISTORIA_DB_VERSION=1,PISTORIA_STATE_STORE='state',PISTORIA_BACKUP_STORE='backups';
@@ -519,17 +520,7 @@ function isStorageAccessError(error){
 
 
 function openPistoriaDB(){
- if(pistoriaDb)return Promise.resolve(pistoriaDb);
- return new Promise((resolve,reject)=>{
-  const req=indexedDB.open(PISTORIA_DB_NAME,PISTORIA_DB_VERSION);
-  req.onupgradeneeded=()=>{
-   const d=req.result;
-   if(!d.objectStoreNames.contains(PISTORIA_STATE_STORE))d.createObjectStore(PISTORIA_STATE_STORE,{keyPath:'id'});
-   if(!d.objectStoreNames.contains(PISTORIA_BACKUP_STORE))d.createObjectStore(PISTORIA_BACKUP_STORE,{keyPath:'id'});
-  };
-  req.onsuccess=()=>{pistoriaDb=req.result;resolve(pistoriaDb)};
-  req.onerror=()=>reject(req.error||new Error('IndexedDB indisponible'));
- });
+ return window.LenaicSync.openApplicationDB(PISTORIA_DB_NAME,PISTORIA_DB_VERSION,[PISTORIA_STATE_STORE,PISTORIA_BACKUP_STORE]).then(value=>{pistoriaDb=value;value.onversionchange=()=>{pistoriaDb=null};return value});
 }
 async function pistoriaIdbGet(store,id){
  const d=await openPistoriaDB();
@@ -543,9 +534,13 @@ async function pistoriaIdbDelete(store,id){
  const d=await openPistoriaDB();
  return new Promise((resolve,reject)=>{const tx=d.transaction(store,'readwrite');tx.objectStore(store).delete(id);tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error)});
 }
-async function pistoriaPersistSerialized(serialized){
- await pistoriaIdbPut(PISTORIA_STATE_STORE,{id:PISTORIA_STATE_ID,savedAt:new Date().toISOString(),payload:serialized});
- return true;
+let pistoriaKnownPrimary, pistoriaWriteQueue=Promise.resolve();
+function pistoriaPersistSerialized(serialized){
+ const row={id:PISTORIA_STATE_ID,savedAt:new Date().toISOString(),payload:serialized};
+ const task=pistoriaWriteQueue.catch(()=>{}).then(async()=>{
+  if(pistoriaKnownPrimary===undefined)pistoriaKnownPrimary=await pistoriaIdbGet(PISTORIA_STATE_STORE,PISTORIA_STATE_ID);
+  await window.LenaicSync.replaceRecord(PISTORIA_DB_NAME,PISTORIA_STATE_STORE,PISTORIA_STATE_ID,pistoriaKnownPrimary,row);pistoriaKnownPrimary=row;return true;
+ });pistoriaWriteQueue=task;return task;
 }
 async function pistoriaPersistCurrent(){
  const serialized=JSON.stringify(data);
@@ -554,8 +549,9 @@ async function pistoriaPersistCurrent(){
 }
 async function pistoriaReadStored(){
  const row=await pistoriaIdbGet(PISTORIA_STATE_STORE,PISTORIA_STATE_ID);
- if(!row?.payload)return null;
- try{return JSON.parse(row.payload)}catch(error){console.error('Copie IndexedDB Pistoria illisible',error);return null}
+ if(pistoriaKnownPrimary===undefined)pistoriaKnownPrimary=row;
+ if(!row)return null;if(typeof row.payload!=='string'||!row.payload)throw Error('Base Pistoria illisible : édition suspendue.');
+ try{const doc=JSON.parse(row.payload);if(!doc||!Array.isArray(doc.investigations))throw Error('Structure Pistoria invalide');return doc}catch(error){throw Error('Copie IndexedDB Pistoria illisible : '+error.message)}
 }
 async function pistoriaWriteBackup(id,value){
  return pistoriaIdbPut(PISTORIA_BACKUP_STORE,{id,savedAt:new Date().toISOString(),payload:JSON.stringify(value)});
@@ -787,33 +783,28 @@ async function loadData(){
  await openPistoriaDB();
  await window.LenaicSync.preserveMigration('pistoria',{legacy:storageGet(STORAGE_KEY),backup:storageGet(BACKUP_KEY),older:['pistoria_data_v2_consolide','pistoria_data_v2','pistoria_data'].map(storageGet),primary:await pistoriaIdbGet(PISTORIA_STATE_STORE,PISTORIA_STATE_ID),previousBackup:await pistoriaIdbGet(PISTORIA_BACKUP_STORE,PISTORIA_IMPORT_BACKUP_ID)});
  let legacy=null,stored=null;
- try{const raw=storageGet(STORAGE_KEY);if(raw)legacy=JSON.parse(raw)}catch(error){console.warn('Ancien localStorage Pistoria illisible',error)}
+ try{const raw=storageGet(STORAGE_KEY);if(raw)legacy=JSON.parse(raw)}catch(error){throw Error('Ancien localStorage Pistoria illisible : '+error.message)}
  stored=await pistoriaReadStored();
  let chosen=null;
- if(legacy&&stored)chosen=pistoriaStateFreshness(legacy)>=pistoriaStateFreshness(stored)?legacy:stored;
+ if(legacy&&stored){if(window.LenaicSync.canonical(legacy)!==window.LenaicSync.canonical(stored))throw Error('Copies Pistoria divergentes : export et comparaison manuelle requis. Aucune copie remplacée.');chosen=stored;}
  else chosen=legacy||stored||cloneData(defaultData);
  const serialized=JSON.stringify(chosen);
  await pistoriaPersistSerialized(serialized);
  const check=await pistoriaIdbGet(PISTORIA_STATE_STORE,PISTORIA_STATE_ID);
  if(!check?.payload||check.payload!==serialized)throw new Error('Vérification de la migration IndexedDB Pistoria impossible.');
- if(legacy){
-  [STORAGE_KEY,BACKUP_KEY,'pistoria_data_v2_consolide','pistoria_data_v2','pistoria_data','bg-drive-sync-meta:pistoria'].forEach(storageRemove);
-  toast('Pistoria a été déplacé vers IndexedDB : le gros localStorage a été libéré.',4200);
- }
+ // Historical localStorage and backups deliberately retained.
+
  return chosen;
 }
-function persistCurrentData(markDirty=true){
+async function persistCurrentData(markDirty=true){
  const payload=JSON.stringify(data);
- pistoriaPersistSerialized(payload).catch(error=>{
-  console.error('Sauvegarde IndexedDB Pistoria',error);
-  toast('Pistoria n’a pas pu enregistrer dans IndexedDB.',5000);
- });
+ try{await pistoriaPersistSerialized(payload)}catch(error){console.error('Sauvegarde IndexedDB Pistoria',error);toast('Échec de sauvegarde locale : '+error.message,5000);return {ok:false,persisted:false}}
  if(markDirty){pistoriaMarkGithubDirty();window.LenaicSync.localChange('pistoria')}
  return{ok:true,persisted:true,bytes:new Blob([payload]).size};
 }
-function saveData(){
+async function saveData(){
   recalculateAllPlans(data);
-  const result=persistCurrentData();
+  const result=await persistCurrentData();
 
   if(!result.persisted){
     alert(
@@ -4214,8 +4205,8 @@ function pistoriaReadGithubMeta(){try{return JSON.parse(storageGet(PISTORIA_GITH
 function pistoriaWriteGithubMeta(patch){const next={...pistoriaReadGithubMeta(),...patch};storageSet(PISTORIA_GITHUB_META_KEY,JSON.stringify(next));pistoriaRefreshGithubStatus();return next}
 function pistoriaGithubToday(){return new Date().toISOString().slice(0,10)}
 function pistoriaMarkGithubDirty(){const meta=pistoriaReadGithubMeta();pistoriaWriteGithubMeta({dirty:true,lastLocalChange:new Date().toISOString(),lastSyncDate:meta.lastSyncDate||''})}
-function pistoriaGetGithubToken(){return sessionStorage.getItem(BG_GITHUB_TOKEN_SESSION_KEY)||sessionStorage.getItem(SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY)||''}
-function pistoriaSetGithubToken(token){if(token){sessionStorage.setItem(BG_GITHUB_TOKEN_SESSION_KEY,token);sessionStorage.setItem(SCRIPTORIA_GITHUB_TOKEN_SESSION_KEY,token)}else sessionStorage.removeItem(BG_GITHUB_TOKEN_SESSION_KEY)}
+function pistoriaGetGithubToken(){return window.LenaicSync.hasToken()}
+function pistoriaSetGithubToken(token){window.LenaicSync.setToken(token)}
 function pistoriaGithubConfig(){const saved=pistoriaReadGithubMeta(),m=location.hostname.match(/^([^.]+)\.github\.io$/i);return{owner:saved.owner||m?.[1]||'ikare63',repo:saved.repo||'data',branch:saved.branch||'main',path:saved.path||PISTORIA_GITHUB_FILE}}
 function pistoriaRefreshGithubStatus(){const b=document.querySelector('[data-action="github-sync"]');if(!b)return;const meta=pistoriaReadGithubMeta(),current=meta.lastSyncDate===pistoriaGithubToday()&&!meta.dirty;b.dataset.syncState=!navigator.onLine?'offline':current?'ok':'dirty';b.title=!navigator.onLine?'GitHub — hors connexion':current?`GitHub synchronisé aujourd’hui${meta.lastSyncAt?' · '+new Date(meta.lastSyncAt).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}):''}`:'GitHub — sauvegarde pistoria.json à effectuer';b.setAttribute('aria-label',b.title)}
 async function pistoriaGithubSync(config={}){return window.LenaicSync.run(pistoriaSafeAdapter,'sync',config)}
@@ -4250,9 +4241,9 @@ document.addEventListener('keydown',e=>{
   le premier appel à normalizePistoriaData(). Cela évite le crash silencieux
   qui laissait uniquement l’en-tête visible.
 */
-const pistoriaSafeAdapter={id:'pistoria',key:STORAGE_KEY,get:()=>data,
- valid:v=>!!v&&Array.isArray(v.investigations),has:v=>!!(v.investigations?.length||v.genealogy?.people?.length),flush:()=>pistoriaPersistCurrent(),
- apply:async v=>{const next=normalizePistoriaData(v);await pistoriaPersistSerialized(JSON.stringify(next));data=next;render()},
+const pistoriaSafeAdapter={id:'pistoria',key:STORAGE_KEY,get:()=>data,valid:v=>!!v&&Array.isArray(v.investigations),has:v=>true,
+ revision:()=>window.LenaicSync.record(PISTORIA_DB_NAME,PISTORIA_STATE_STORE,PISTORIA_STATE_ID),consistent:(v,row)=>window.LenaicSync.canonical(row)===window.LenaicSync.canonical(pistoriaKnownPrimary),
+ apply:async(v,expected)=>{const next=normalizePistoriaData(v),row={id:PISTORIA_STATE_ID,savedAt:new Date().toISOString(),payload:JSON.stringify(next)};await window.LenaicSync.replaceRecord(PISTORIA_DB_NAME,PISTORIA_STATE_STORE,PISTORIA_STATE_ID,expected,row);pistoriaKnownPrimary=row;data=next;render();return next},
  success:(at,sha)=>pistoriaWriteGithubMeta({dirty:false,lastSyncAt:at,lastSyncDate:pistoriaGithubToday(),lastRemoteSha:sha})};
 async function initPistoria(){
  try{

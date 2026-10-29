@@ -1,3 +1,5 @@
+> **Mise à jour du 29 octobre 2026 :** le verdict et la procédure applicables sont dans [MIGRATION-SANS-PERTE.md](MIGRATION-SANS-PERTE.md). Les indications de synchronisation directe ci-dessous sont historiques et suspendues. 36 tests moteur et 3 tests du vérificateur passent ; les sauvegardes des appareils restent non validées. Ne pas fusionner pour migrer.
+
 # Audit et correction de la synchronisation privée — 28 octobre 2026
 
 État : corrections proposées sur `audit/private-sync-20261028`. Aucun déploiement demandé, aucune fusion dans `main`, aucune sauvegarde personnelle modifiée pendant l'audit. Les tests utilisent des données fictives. Les dépôts sources ont été lus directement depuis GitHub, sans archive ZIP.
